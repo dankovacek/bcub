@@ -5,6 +5,7 @@ from multiprocessing import Pool
 import numpy as np
 import pandas as pd
 import geopandas as gpd 
+import rioxarray as rxr
 
 from shapely.geometry import Polygon, Point
 
@@ -23,10 +24,10 @@ tile_links = pd.read_csv(os.path.join(input_data_dir, 'file_lists/USGS_3DEP_tile
 url_list = tile_links.values
 
 
-def download_file(filename):
-    url = f'http://mirrors.iplantcollaborative.org/earthenv_dem_data/EarthEnv-DEM90/{filename}'
-
-    command = f'wget {url} -P {DEM_DIR}'
+def download_file(url):
+    
+    filename = url[0].split('/')[-1]
+    command = f'wget {url[0]} -P {DEM_DIR}'
     save_path = f'{DEM_DIR}/{filename}'
 
     if not os.path.exists(save_path):
@@ -34,15 +35,21 @@ def download_file(filename):
     
         # folder_name = filename.split('.')[0]
         # os.system(f'tar -xf {DEM_DIR}/{filename} -C {DEM_DIR}')
+    print('')
 
 with Pool() as p:
     p.map(download_file, url_list[:3])
 
-print(asdfs)
+dem_files = os.listdir(DEM_DIR)
+test_file = [f for f in dem_files if f.endswith('.tif')][0]
+raster = rxr.open_rasterio(os.path.join(DEM_DIR, test_file))
+# get the crs of the first file
+crs = raster.rio.crs
+
 # vrt_output_path = os.path.join(input_data_dir, 'vrt_files')
 # this command builds the dem mosaic "virtual raster"
 mosaic_file = 'USGS_3DEP_DEM_mosaic.vrt'
-vrt_command = f"gdalbuildvrt -resolution highest -a_srs epsg:4326 {input_data_dir}/{mosaic_file} {input_data_dir}/DEM/*.tif"
+vrt_command = f"gdalbuildvrt -resolution highest -a_srs {crs} {input_data_dir}/{mosaic_file} {DEM_DIR}/*.tif"
 os.system(vrt_command)
 
 # remove the downloaded tar files
