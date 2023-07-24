@@ -2,7 +2,9 @@
 .vscode
 references/
 *-draft.md
+input_data/*.vrt
 input_data/DEM/
 input_data/AK_*/
 input_data/processed_dem/
 input_data/NHN_INDEX*/
+input_data/region_polygons/

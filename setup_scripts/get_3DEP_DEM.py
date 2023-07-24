@@ -21,13 +21,20 @@ for p in [DEM_DIR]:
 input_data_dir = os.path.join(BASE_DIR, 'input_data/')
 
 tile_links = pd.read_csv(os.path.join(input_data_dir, 'file_lists/USGS_3DEP_tile_links.txt'), header=None)
-url_list = tile_links.values
+url_list = tile_links.values.flatten().tolist()
+
+targets = ['n50w121', 'n50w122']#, 'n48w121', 'n49w121']
+
+url_list = [u for u in url_list if u.split('/')[-1].split('_')[2] in targets]
+
+# print(url_list[:3])
+# print('')
+# print(asfd)
 
 
-def download_file(url):
-    
-    filename = url[0].split('/')[-1]
-    command = f'wget {url[0]} -P {DEM_DIR}'
+def download_file(url):    
+    filename = url.split('/')[-1]
+    command = f'wget {url} -P {DEM_DIR}'
     save_path = f'{DEM_DIR}/{filename}'
 
     if not os.path.exists(save_path):
@@ -38,19 +45,21 @@ def download_file(url):
     print('')
 
 with Pool() as p:
-    p.map(download_file, url_list[:3])
+    p.map(download_file, url_list)
 
 dem_files = os.listdir(DEM_DIR)
 test_file = [f for f in dem_files if f.endswith('.tif')][0]
 raster = rxr.open_rasterio(os.path.join(DEM_DIR, test_file))
 # get the crs of the first file
 crs = raster.rio.crs
+print(f'Creating raster vrt in crs: {crs}')
 
 # vrt_output_path = os.path.join(input_data_dir, 'vrt_files')
 # this command builds the dem mosaic "virtual raster"
-mosaic_file = 'USGS_3DEP_DEM_mosaic.vrt'
+mosaic_file = f'USGS_3DEP_DEM_mosaic_{crs.to_epsg()}.vrt'
 vrt_command = f"gdalbuildvrt -resolution highest -a_srs {crs} {input_data_dir}/{mosaic_file} {DEM_DIR}/*.tif"
 os.system(vrt_command)
+print(f'Created {mosaic_file} in {input_data_dir}')
 
 # remove the downloaded tar files
 # for f in glob.glob(f'{EENV_DIR}/*.tar.gz'):

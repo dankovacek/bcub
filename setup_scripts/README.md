@@ -81,6 +81,9 @@ at right after clipping rasters using the provided sub-region polygons:
 ![DEM Mosaic of BC and administrative boundary
 regions](../img/DEM_tiled_trimmed.png)
 
+Sub-region Polygons
+-------------------
+
 The study region is split into sub-regions that describe “complete
 basins”, in other words the region bounds have no inflows, only
 outflows. This is an important property when delineating basins at
@@ -88,23 +91,34 @@ arbitrary points in space. The sub-regions are derived from Water Survey
 of Canada sub-sub-catchment (SSC) polygons from the National
 Hydrographic Network (NHN) and from the USGS for southeast Alaska.
 
+A zipped archive file of region polygons is provided in
+`input_data/region_polygons.zip`. Unzip the folder in its existing
+location.
+
+> `unzip input_data/region_polygons.zip -d input_data/region_polygons/`
+
 ![Merging process for complete sub-regions.](../img/merging_regions.png)
 
-DEM Preparation
----------------
+> :warning: **Sub-region naming may not perfectly follow the WUL naming
+> convention.**
 
-This step represents the heavy lifting where large regions of DEM such
-as the Liard, Peace, and and Fraser River basins are processed into flow
-direction and flow accumulation.
-[Whiteboxtools](python%20process_dem_by_basin.py) was used here for the
-step of delineating a large set of basins.
+DEM Processing
+--------------
 
-<!-- Note: the breach [depression function](https://jblindsay.github.io/ghrg/Whitebox/Help/BreachDepressions.html) run on the DEM is a bottleneck step.   -->
+Here we clip DEM files using the sub-region polygons because the study
+region is too large to process as a whole.
+[Whiteboxtools](https://www.whiteboxgeo.com/manual/wbt_book/intro.html)
+is used here for the DEM processing steps of hydraulic conditioning,
+flow direction, accumulation, and stream network generation.
 
 Create the individual region DEM files using the provided region
 polygons and the DEM tile mosaic created in the previous step:  
 &gt;`cd setup_scripts/`  
-&gt;`python create_complete_region_DEMS.py`
+&gt;`python clip_region_DEM.py`
+
+> :info: **Check the list of region polygons to process**: The above
+> script is initialized to test just the smallest region. To process all
+> regions, comment out the line `region_codes = ['08P']`
 
 Process the region DEMs to create rasters representing flow direction,
 flow accumulation, and stream network:  
