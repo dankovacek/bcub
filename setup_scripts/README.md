@@ -116,7 +116,7 @@ polygons and the DEM tile mosaic created in the previous step:
 &gt;`cd setup_scripts/`  
 &gt;`python clip_region_DEM.py`
 
-> :info: **Check the list of region polygons to process**: The above
+> :wave: **Check the list of region polygons to process**: The above
 > script is initialized to test just the smallest region. To process all
 > regions, comment out the line `region_codes = ['08P']`
 
