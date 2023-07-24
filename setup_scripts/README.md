@@ -116,7 +116,7 @@ polygons and the DEM tile mosaic created in the previous step:
 &gt;`cd setup_scripts/`  
 &gt;`python clip_region_DEM.py`
 
-> :note: **Check the list of region polygons to process**: The dem
+> **Note** **Check the list of region polygons to process**: The dem
 > processing scripts are initialized to test just the smallest region
 > (08P - Skagit basin in Washington / BC). To process all regions,
 > comment out the line `region_codes = ['08P']`
