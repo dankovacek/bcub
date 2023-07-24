@@ -69,14 +69,16 @@ The tiles can be downloaded and merged into a virtual raster with gdal
 by running the `get_3DEP_DEM.py` script saved under `setup_scripts`:  
 &gt;`python get_3DEP_DEM.py`
 
-> :warning: **The tile list urls will at some point change**: After
-> downloading, compare the study region polygon with the tile set (vrt)
-> to ensure al covering tiles are downloaded. Links to invidivual DEM
-> tiles look like the following:  
+> **Warning**<br> **The tile list urls will at some point change**:
+> After downloading, compare the study region polygon with the tile set
+> (vrt) to ensure al covering tiles are downloaded. Links to invidivual
+> DEM tiles look like the following:  
 > `http://mirrors.iplantcollaborative.org/earthenv_dem_data/EarthEnv-DEM90/EarthEnv-DEM90_N55W125.tar.gz`
 
-The .vrt mosaic created by the script looks like the image at left, and
-at right after clipping rasters using the provided sub-region polygons:
+The .vrt mosaic created by the script will look similar to the image at
+left if viewed in QGIS or other software. After clipping rasters and
+reassembling the resulting files to another `.vrt`, it should look like
+the image at right:
 
 ![DEM Mosaic of BC and administrative boundary
 regions](../img/DEM_tiled_trimmed.png)
