@@ -76,7 +76,7 @@ by running the `get_3DEP_DEM.py` script saved under `setup_scripts`:
 > `https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/1/TIFF/historical/n62w130/USGS_1_n62w130_20130911.tif`
 
 The .vrt mosaic created by the script will look similar to the image at
-left if viewed in QGIS or other software. After clipping rasters and
+left when viewed in QGIS or similar software. After clipping rasters and
 reassembling the resulting files to another `.vrt`, it should look like
 the image at right:
 
@@ -101,8 +101,8 @@ location.
 
 ![Merging process for complete sub-regions.](../img/merging_regions.png)
 
-> :warning: **Sub-region naming may not perfectly follow the WUL naming
-> convention.**
+> :warning: **Sub-region naming does not perfectly follow the NHN WUL
+> naming convention.**
 
 DEM Processing
 --------------
@@ -112,6 +112,8 @@ region is too large to process as a whole.
 [Whiteboxtools](https://www.whiteboxgeo.com/manual/wbt_book/intro.html)
 is used here for the DEM processing steps of hydraulic conditioning,
 flow direction, accumulation, and stream network generation.
+
+### Clip DEM by sub-region and process stream networks
 
 Create the individual region DEM files using the provided region
 polygons and the DEM tile mosaic created in the previous step:  
@@ -127,12 +129,36 @@ Process the region DEMs to create rasters representing flow direction,
 flow accumulation, and stream network:  
 &gt;`python derive_flow_accumulation.py`
 
-Using the stream raster, generate pour points at headwaters and
-confluences:  
+### Generate pour points at confluences
+
+Using the stream raster, generate pour points at river confluences.
+Confluences are defined as stream cells with more than one inflow. An
+inflow is an adjacent stream cell whose flow direction points to the
+focal cell.  
 &gt;`python automate_pourpt_generation.py`
 
+### Hydrographic Features
+
 The last step before basin delineation is to filter spurious pour
-points. &gt;`python`
+points. First we download the hydrographic features dataset
+(\`rhn\_nhn\_hhyd.gpkg.zip\`\`) from the [National Hydrographic
+Network](https://open.canada.ca/data/en/dataset/a4b190fe-e090-4e6d-881e-b87956c07977).
+
+> **Note**<br> The hydrographic features file is large (**14 GB**) and
+> may take a while to download. The file is not included in this
+> repository. The file download is automated in the `lakes_filter.py`
+> script. The script will download the file to the `input_data` folder.
+> The script will not re-download the file if it already exists in the
+> `input_data` folder.
+
+### Filter spurious pour points
+
+Once the file is downloaded, the `lakes_filter` script then clips the
+NHN water bodies features to each sub-region polygon to reduce RAM
+usage. The water body polygons are then used to filter out (spurious)
+confluences in lakes. &gt;`python lakes_filter.py`
+
+### Basin delineation
 
 The data preparation work is done. Now we generate large sample of
 basins to characterize the decision space (of candidate monitoring
@@ -141,67 +167,7 @@ locations)
 Generate a basin for each of the pour points:  
 &gt;`setup_scripts/python pysheds_derive_basin_polygons.py`
 
-We next run a Monte Carlo (MC) simulation to characterize the cumulative
-probability distribution of basin attributes based on different basin
-pour point selection methods. Deriving a basin for each stream cell
-(candidate location) is not feasible, so we want to develop more
-efficient characterization methods and compare the resulting
-characterization of attributes.
-
-The MC simulation procedure is as follows:
-
-1.  Set the “monitoring area density”, corresponding to one station per
-    *A*<sub>*s*</sub> km^2 to represent the number of locations selected
-    in each simulation. A 1000 km^2 study region then has
-    *N*<sub>*s**t**n*</sub> = 10 stations *in each simulation*. Note
-    that the WMO guideline for monitoring networks in mountainous
-    regions is one station per 1000 *k**m*<sup>2</sup> (WMO, 2008), so
-    our simulations are 10x more dense than the guideline.  
-
-2.  Set the number of simulations *N*<sub>*s**i**m*</sub>. There is a
-    performance tradeoff between the number of stations per simulation
-    and the number of simulations that needs to be explored to better
-    optimize the characterization process.
-
-3.  Retrieve the indices of all stream cells in the processed
-    (hydraulically conditioned) raster.
-
-4.  Generate *N*<sub>*s**t**n*</sub> pour points (candidate monitoring
-    locations) from the set of stream cells by three selection methods:
-
-    1.  **Random (RAND)**: randomly select *N*<sub>*s**t**n*</sub> cells
-        from the array of all stream cells.
-
-    2.  **Confluence (CONF)**: using the flow direction raster, find all
-        confluences. Confluences are defined as stream cells fed by more
-        than one connected stream cell using the D8 flow direction
-        convention. Randomly select *N*<sub>*s**t**n*</sub> confluence
-        cells.
-
-    3.  **Gradient (GRAD)**: using the flow accumulation raster, find
-        all cells where the difference in accumulation between connected
-        cells is greater than some threshold. We are interested in
-        minimizing the redundancy in basin delineation, for example a
-        basin comprised of 10<sup>6</sup> cells and its immediate
-        neighbour which adds only a marginal contributing basin area
-        would yield two basins with nearly identical attributes. The
-        threshold then represents a minimum area change we are
-        interested in tracking. The threshold
-        (*a*<sub>*g**r**a**d*</sub>) is set to 5% of the target cell
-        accumulation.
-
-    <!-- -->
-
-        For all stream cells:  
-            (i, j) = stream cell indices
-            acc = upstream contributing area (constant scalar)  
-            W = 3x3 matrix with acc at index 1, 1  
-            G = W - acc  
-            pct = G / acc
-                if any(G) > $a_{grad}$:  
-                    append (i, j) to a list.
-
-MAKE REV D THE PERCENT-BASED ACCUMULATION GRADIENT
+### Extract Attributes
 
 Additional Notes
 ----------------
