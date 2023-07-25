@@ -1,5 +1,5 @@
-Automated Basin Delineation
-===========================
+Automated Basin Delineation and Attribute Extraction
+====================================================
 
 This repository provides an automated pipeline for generating large
 samples of basins from DEM. First, DEM files are collected from an
@@ -73,7 +73,7 @@ by running the `get_3DEP_DEM.py` script saved under `setup_scripts`:
 > After downloading, compare the study region polygon with the tile set
 > (vrt) to ensure al covering tiles are downloaded. Links to invidivual
 > DEM tiles look like the following:  
-> `http://mirrors.iplantcollaborative.org/earthenv_dem_data/EarthEnv-DEM90/EarthEnv-DEM90_N55W125.tar.gz`
+> `https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/1/TIFF/historical/n62w130/USGS_1_n62w130_20130911.tif`
 
 The .vrt mosaic created by the script will look similar to the image at
 left if viewed in QGIS or other software. After clipping rasters and
@@ -130,6 +130,9 @@ flow accumulation, and stream network:
 Using the stream raster, generate pour points at headwaters and
 confluences:  
 &gt;`python automate_pourpt_generation.py`
+
+The last step before basin delineation is to filter spurious pour
+points. &gt;`python`
 
 The data preparation work is done. Now we generate large sample of
 basins to characterize the decision space (of candidate monitoring
