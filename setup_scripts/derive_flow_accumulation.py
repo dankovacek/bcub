@@ -43,11 +43,13 @@ for region in sorted(list(set(region_codes))):
     out_d8_file = f'{region}_{DEM_source}_{crs}_fdir.tif'
     out_accum_file = f'{region}_{DEM_source}_{crs}_accum.tif'
     out_stream_file = f'{region}_{DEM_source}_{crs}_stream.tif'
+    stream_link_file = f'{region}_{DEM_source}_{crs}_link.tif'
 
     filled_dem_path = os.path.join(DEM_DIR, filled_dem_file)
     d8_path = os.path.join(DEM_DIR, out_d8_file)
     accum_path = os.path.join(DEM_DIR, out_accum_file)
     stream_path = os.path.join(DEM_DIR, out_stream_file)
+    stream_link_path = os.path.join(DEM_DIR, stream_link_file)
     
     if not os.path.exists(filled_dem_path):
         wbt.fill_depressions(
@@ -96,13 +98,11 @@ for region in sorted(list(set(region_codes))):
             zero_background=False, 
         )
         
-    # out_pruned_stream_file = f'EENV_DEM/{region}_EENV_DEM_3005_pruned_stream.tif'
-    # pruned_stream_path = os.path.join(DATA_DIR, out_pruned_stream_file)
-    # if not os.path.exists(pruned_stream_path):
-    #     wbt.remove_short_streams(
-    #         os.path.join(DATA_DIR, out_pntr_file),
-    #         stream_path, 
-    #         pruned_stream_path, 
-    #         100, # min tributary length in map units (metres) 
-    #         esri_pntr=False, 
-    #     )
+    if not os.path.exists(stream_link_path):
+        wbt.stream_link_identifier(
+            d8_path, 
+            stream_path, 
+            stream_link_path, 
+            esri_pntr=False, 
+            zero_background=False, 
+        )

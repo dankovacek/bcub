@@ -10,16 +10,11 @@ import numpy as np
 import pandas as pd
 import geopandas as gpd
 import rioxarray as rxr
-import xarray as xr
-import rasterio as rio
+# import rasterio as rio
 
 import multiprocessing as mp
 
-from shapely.geometry import Point, LineString
-
-# from numba import jit
-
-
+from shapely.geometry import Point, LineString, Polygon
 
 DEM_source = 'USGS_3DEP'
 
@@ -35,20 +30,19 @@ if not os.path.exists(output_path):
 # set in "derive_flow_accumulation.py"
 min_basin_area = 2 # km^2
 
-nhn_dir = os.path.join(BASE_DIR, 'NHN_data')
-nhn_file = os.path.join(nhn_dir, 'NHN_waterbody.gdb')
+nhn_dir = os.path.join(BASE_DIR, 'input_data/NHN_data')
+nhn_fpath = os.path.join(nhn_dir, 'rhn_nhn_hhyd.gpkg')
+# the NHN CRS is EPSG:4617
+nhn_crs = 4617
 
-if not os.path.exists(nhn_file):
-    if not os.path.exists(nhn_dir):
-        os.mkdir(nhn_dir)
-    command = f"wget https://ftp.maps.canada.ca/pub/nrcan_rncan/vector/geobase_nhn_rhn/gpkg_en/CA/rhn_nhn_hhyd.gpkg.zip -d {nhn_dir}"
-    os.system(command)
+if not os.path.exists(nhn_fpath):
+    err_msg = f'NHN file not found at {nhn_fpath}.  Download from https://ftp.maps.canada.ca/pub/nrcan_rncan/vector/geobase_nhn_rhn/gpkg_en/CA/rhn_nhn_hhyd.gpkg.zip.  See README for details.'
+    raise Exception(err_msg)
 
-print(asdfs)
 
-def retrieve_raster(region, region_polygon, raster_type):
+def retrieve_raster(region, raster_type):
     filename = f'{region}_{DEM_source}_3005_{raster_type}.tif'
-    raster_path = os.path.join(processed_dem_dir, f'{filename}')
+    raster_path = os.path.join(DEM_DIR, f'{filename}')
     raster = rxr.open_rasterio(raster_path, mask_and_scale=True)
     crs = raster.rio.crs
     affine = raster.rio.transform(recalc=False)
@@ -57,7 +51,7 @@ def retrieve_raster(region, region_polygon, raster_type):
 
 
 def get_region_polygon(region):
-    polygon_path = os.path.join(DATA_DIR, 'merged_basin_groups/region_polygons/')
+    polygon_path = os.path.join(BASE_DIR, 'input_data/region_polygons/')
     poly_files = os.listdir(polygon_path)
     file = [e for e in poly_files if e.startswith(region)]
     if len(file) == 0:
@@ -78,25 +72,18 @@ def clip_raster_with_polygon(region, raster, crs, resolution):
     return clipped
 
 
-def mask_lakes_by_region(region, region_polygon, ldf):
-    ta = time.time()
-    print(f'   ...importing {region} region polygon')
-    # reproject to match nhn crs
-    # region_polygon = region_polygon.to_crs(4617)
-    tb = time.time()
-    print(f'   ...region polygon opened in {tb-ta:.2f}s')
-    ta = time.time()
-    region_polygon = region_polygon.to_crs(4617)    
-    tc = time.time()
-    region_lakes = gpd.sjoin(ldf, region_polygon, how='inner', predicate='intersects')
-    tb = time.time()
-    print(f'   ...lakes sjoin processed in {tb-tc:.2f}s')
-    return region_lakes
+def trim_appendages(row):
+    g = gpd.GeoDataFrame(geometry=[row['geometry']], crs='EPSG:3005')
+    geom = g.explode()
+    geom['area'] = geom.geometry.area
+    if len(geom) > 1:
+        # return only the largest geometry by area
+        return geom.loc[geom['area'].idxmax(), 'geometry']
+    return row['geometry']
+               
 
-
-def filter_ppts_by_lakes_geom(region, region_lakes, region_ppts):
-    """Filter out "confluence" pour points that lie in permanent water bodies.
-    
+def filter_lakes(lakes_df, ppts, resolution):
+    """
     Permanency code:
     -1 unknown
     0 no value available
@@ -104,263 +91,281 @@ def filter_ppts_by_lakes_geom(region, region_lakes, region_ppts):
     2 intermittent
 
     Args:
-        region (_type_): _description_
-        lakes_df (_type_): _description_
+        wb_df (geodataframe): Water body geometries.
+        ppts (geodataframe): Pour points.
         
-    water_definition Label Code Definition
+    water_definition Label Definition
     ----------------------------- ---- ----------
-    None 0 No Waterbody Type value available.
-    Canal 1 An artificial watercourse serving as a navigable waterway or to
-    channel water.
-    Conduit 2 An artificial system, such as an Aqueduct, Penstock, Flume, or
-    Sluice, designed to carry water for purposes other than
-    drainage.
-    Ditch 3 Small, open manmade channel constructed through earth or
-    rock for the purpose of conveying water.
-    *Lake 4 An inland body of water of considerable area.
-    *Reservoir 5 A wholly or partially manmade feature for storing and/or
-    regulating and controlling water.
-    Watercourse 6 A channel on or below the earth's surface through which water
-    may flow.
-    Tidal River 7 A river in which flow and water surface elevation are affected by
-    the tides.
-    *Liquid Waste 8 Liquid waste from an industrial complex.
+    None            0       No Waterbody Type value available.
+    Canal           1       An artificial watercourse serving as a navigable waterway or to
+                            channel water.
+    Conduit         2       An artificial system, such as an Aqueduct, Penstock, Flume, or
+                            Sluice, designed to carry water for purposes other than
+                            drainage.
+    Ditch           3       Small, open manmade channel constructed through earth or
+                            rock for the purpose of conveying water.
+    *Lake           4       An inland body of water of considerable area.
+    *Reservoir      5       A wholly or partially manmade feature for storing and/or
+                            regulating and controlling water.
+    Watercourse     6       A channel on or below the earth's surface through which water
+                            may flow.
+    Tidal River     7       A river in which flow and water surface elevation are affected by
+                            the tides.
+    *Liquid Waste   8       Liquid waste from an industrial complex.
+    """    
+    lakes_df = lakes_df.to_crs(ppts.crs)
+    
+    # reproject to projected CRS before calculating area
+    lakes_df['area'] = lakes_df.geometry.area
+    lakes_df['lake_id'] = lakes_df.index.values
+        
+    # filter lakes smaller than 0.01 km^2
+    min_area = 10000
+    lakes_df = lakes_df[lakes_df['area'] > min_area]
+    
+    lakes_df = lakes_df[['acquisition_technique', 'lake_id', 'area', 'water_definition', 'planimetric_accuracy', 'permanency', 'geometry']]
+    # filter by water_definition code 
+    # get lakes and reservoirs (4 & 5)
+    lakes_df = lakes_df[(lakes_df['water_definition'] == 4) | (lakes_df['water_definition'] == 5)]
+    lakes_df = lakes_df.dissolve().explode(index_parts=False).reset_index(drop=True)
+    
+    # find and fill holes in polygons
+    lakes_df.geometry = [Polygon(p.exterior) for p in lakes_df.geometry]
+        
+    # find the set of lakes that contain confluence points
+    lakes_with_pts = gpd.sjoin(lakes_df, ppts, how='left', predicate='intersects')
+    # the rows with index_right == nan are lake polygons containing no points
+    lakes_with_pts = lakes_with_pts[~lakes_with_pts['index_right'].isna()]        
+    # drop all duplicate indices
+    lakes_with_pts = lakes_with_pts[~lakes_with_pts.index.duplicated(keep='first')]
+    lakes_with_pts.area = lakes_with_pts.geometry.area
+        
+    # use negative and positive buffers to remove small "appendages"
+    # that tend to add many superfluous inflow points
+    distance = 100  # metres
+    lakes_with_pts.geometry = lakes_with_pts.buffer(-distance).buffer(distance * 1.5).simplify(resolution)
+    lakes_with_pts['geometry'] = lakes_with_pts.apply(lambda row: trim_appendages(row), axis=1)
+    lake_cols = ['acquisition_technique', 'lake_id', 'area', 
+                 'water_definition', 'planimetric_accuracy', 'permanency', 'geometry']
+    return lakes_with_pts[lake_cols]
+    
+    
+def interpolate_line(inputs):
+    geom, n, num_vertices = inputs
+    d = n / num_vertices
+    return (n, geom.interpolate(d, normalized=True))
+ 
+    
+def redistribute_vertices(geom, distance):
+    """Evenly resample along a linestring
+    See this SO post:
+    https://gis.stackexchange.com/a/367965/199640
+    
+    Args:
+        geom (polygon): lake boundary geometry
+        distance (numeric): distance between points in the modified linestring
+
+    Raises:
+        ValueError: _description_
 
     Returns:
         _type_: _description_
     """
 
-    # streams = retrieve_raster(region, 'stream')
-    # region_ppts = region_ppts.to_crs(lakes_df.crs)
-    assert region_ppts.crs == region_lakes.crs
-    region_lakes['area'] = region_lakes.geometry.area
-    # filter lakes smaller than 0.01 km^2
-    ldf = region_lakes[region_lakes['area'] > 10000].copy()
-    ldf = ldf[['acquisition_technique', 'area', 'water_definition', 'planimetric_accuracy', 'permanency', 'geometry']]
-    ldf = ldf.explode(index_parts=False)
-    
-    # filter by water_definition code 
-    # get lakes and reservoirs (5 & 6)
-    lake_filter = (ldf['water_definition'] > 3) & (ldf['water_definition'] < 6)
-    filtered_lakes = ldf[lake_filter].copy()
-    
-    # merge contiguous polygons 
-    filtered_lakes = gpd.GeoDataFrame(geometry=[filtered_lakes.geometry.unary_union], crs='EPSG:3005')
-    filtered_lakes = filtered_lakes.explode().reset_index(drop=True)
-    # lake_ppts = region_ppts[region_ppts.within(lakes_df.geometry)].copy()
-    ppt_lakes = gpd.sjoin(filtered_lakes, region_ppts, how='inner', predicate='intersects')   
-    ppt_lakes['lake_idx'] = ppt_lakes.index
-    
-    n_lakes = len(set(ppt_lakes['lake_idx']))
-    print(f'   {n_lakes}/{len(region_lakes)} lakes contain ppts.')
-    
-    return ppt_lakes
-    
-    
-def redistribute_vertices(geom, distance):
     if geom.geom_type in ['LineString', 'LinearRing']:
-        num_vert = int(round(geom.length / distance))
-        if num_vert == 0:
-            num_vert = 1
-        return LineString(
-            [geom.interpolate(float(n) / num_vert, normalized=True)
-             for n in range(num_vert + 1)])
+        num_vertices = int(round(geom.length / distance))
+        
+        if num_vertices == 0:
+            num_vertices = 1
+        # print(f'total distance = {geom.length:.0f} m, n_vertices = {num_vertices}')
+        inputs = [(geom, float(n), num_vertices) for n in range(num_vertices + 1)]
+        pool = mp.Pool()
+        results = pool.map(interpolate_line, inputs)
+        pool.close()
+        
+        df = pd.DataFrame(results, columns=['n', 'geometry'])
+        df = df.sort_values(by='n').reset_index(drop=True)
+        return LineString(df['geometry'].values)
+    
     elif geom.geom_type == 'MultiLineString':
         ls = gpd.GeoDataFrame(geometry=[geom], crs='EPSG:3005')
         geoms = ls.explode().reset_index(drop=True).geometry.values
         parts = [redistribute_vertices(part, distance)
                  for part in geoms]
-        print(parts)
         return type(geom)([p for p in parts if not p.is_empty])
     else:
         raise ValueError('unhandled geometry %s', (geom.geom_type,))
 
 
-def get_pt_indices(region, raster_type, df, acc):
-    filename = f'{region}_{DEM_source}_3005_{raster_type}.tif'
-    raster_path = os.path.join(DEM_DIR, f'{filename}')
-    pt_info = []
-    with rio.open(raster_path) as src:
-        for i, p in df.iterrows():
-            latlon = p.geometry.coords.xy
-            x, y = latlon[0].tolist(), latlon[1].tolist()
-            idx = acc.sel(x=x[0], y=y[0], method='nearest', tolerance=abs(acc.rio.resolution()[0]))
-            accum = idx.data[0]
-            rows, cols = rio.transform.rowcol(src.transform, x, y)
-            pt_info.append([f'{rows[0]},{cols[0]}', accum, rows[0], cols[0], p.geometry, False])
-    
-    cols = ['cell_idx', 'acc', 'ix', 'jx', 'geometry', 'in_lake']
-    pt_df = pd.DataFrame(pt_info, columns=cols)
-    pt_gdf = gpd.GeoDataFrame(pt_df, crs='EPSG:3005')
-    return pt_gdf
-
-
-def process_shoreline_pts(inputs):
-
-    x, y, region_ppts, resolution = inputs    
-    pt = Point(x, y)
-    
-    # lake_check = not_in_this_lake & not_in_any_lake
-    # don't let adjacent points both be pour points
-    # but avoid measuring distance to points within lakes
-    rpt_dists = region_ppts[~region_ppts['in_lake']].distance(pt).min()
-    dist_check = rpt_dists <= 4.0 * resolution
-    
-    # accum_check = accum < 0.95 * max_acc
-    accum_check = True
-    if accum_check & (~dist_check):
-        # check if the potential point is in any of the lakes
-        # not_in_any_lake = sum([lg.contains(pt) for lg in lakes_df.geometry]) == 0
-        if not lakes_df.contains(pt).any():
-            return pt
-    return None
-
-
-def find_lake_inflows(region, region_polygon, lakes_df, region_ppts):
-    # add intersections with stream cells at edge of lakes
-    acc, crs, affine = retrieve_raster(region, region_polygon, 'accum')
-    # stream, crs, affine = retrieve_raster(region, region_polygon, 'stream')
-    resolution = abs(acc.rio.resolution()[0])
-    # print('resolution, ', resolution)
-    
-    min_acc_cells = 1E6 / (resolution**2)
-    # print(f'    acc threshold = {min_acc_cells}')
-        
-    n_lakes = len(lakes_df)
-    # print(lakes_df)
-    print(f' processing {n_lakes} lakes')
-
-    all_new_pts = []
-    region_ppts['in_lake'] = False
-    n_grps = len(list(set(lakes_df['lake_idx'])))
-    if n_grps < 10:
-        p_interval = 5
-    elif n_grps < 100:
-        p_interval = 10
+def find_link_ids(target):
+    x, y, lake = target
+    stream_loc = stream.sel(x=x, y=y).squeeze()
+    link_id = stream_loc.item()
+    if ~np.isnan(link_id):
+        return [Point(x, y), link_id]
     else:
-        p_interval = 25
+        nbr = stream.rio.clip_box(x-resolution, y-resolution, x+resolution,y+resolution)
         
-    for i, lake_grp in lakes_df.groupby('lake_idx'):
-        region_ppts.loc[lake_grp['index_right'].values, 'in_lake'] = True
+        if np.isnan(nbr.data).all():
+            return None
         
-    filtered_region_ppts = region_ppts[region_ppts['in_lake']].copy()
-        
+        raster_nonzero = nbr.where(nbr > 0, drop=True)
+        # Check surrounding cells for nonzero link_ids
+        xs, ys = raster_nonzero.x.values, raster_nonzero.y.values
+        for x1, y1 in zip(xs, ys):
+            link_id = nbr.sel(x=x1, y=y1).squeeze().item()
+            pt = Point(x1, y1)
+            if ~np.isnan(link_id) & (not lake.contains(pt)):
+                return [Point(x1, y1), link_id]
+    return None
+            
+
+def add_lake_inflows(lakes_df, ppts, stream):
+    
     n = 0
     tot_pts = 0
-    tb = time.time()
-    for _, lake_grp in lakes_df.groupby('lake_idx'):
+    resolution = abs(stream.rio.resolution()[0])
+    crs = stream.rio.crs.to_epsg()
+
+    points_to_check = []
+    # used_links = []
+    # all_links = []
+    # test_pts = []
+    for _, row in lakes_df.iterrows():
         n += 1
-        if n % p_interval == 0:
-            print(f'   Processing lake group {n}/{n_grps}')        
+        if n % 50 == 0:
+            print(f'   Processing lake group {n}/{len(lakes_df)}, {tot_pts} points so far...')
         
-        # get the unique lake polygon (geoms in lake_grp are duplicates)
-        lake_geom = list(set(lake_grp.geometry))[0].simplify(resolution)
-        
-        shoreline = lake_geom.buffer(resolution*2)
-        # create_geom = True
-        # if lake_geom.area > 10000000:
-        #     foo = gpd.GeoDataFrame(geometry=[shoreline], crs='EPSG:3005')
-        #     if create_geom:
-        #         foo.to_file('shore_foo.geojson')
-        #         create_geom = False
-        
+        lake_geom = row['geometry']        
         # resample the shoreline vector to prevent missing confluence points
-        resampled_shoreline = redistribute_vertices(shoreline.exterior, 5).coords.xy
+        resampled_shoreline = redistribute_vertices(lake_geom.exterior, resolution).coords.xy
         xs = resampled_shoreline[0].tolist()
         ys = resampled_shoreline[1].tolist()
-        
-        px_pts = acc.sel(x=xs, y=ys, method='nearest', tolerance=resolution/2)
+
+        # find the closest cell to within 1 pixel diagonal of the lake polygon boundary
+        # this is the problem here.
+        # what's happening is for each interpolated point on the line, 
+        # we look for the nearest pixel in the stream raster
+        # we should iterate through and find the nearest *stream pixel* 
+        # and record it if 
+        #           i)  it's not in a lake and 
+        #           ii) not on a stream link already recorded
+        px_pts = stream.sel(x=xs, y=ys, method='nearest', tolerance=resolution)
         latlon = list(set(zip(px_pts.x.values, px_pts.y.values)))
-        tot_pts += len(latlon)
-
-        inputs = []
-        for x, y in latlon:
-            acc_val = px_pts.sel(x=x, y=y).drop_duplicates(dim=...).squeeze()
-            accum = acc_val.item()
-            if (accum > min_acc_cells):
-                inputs.append((x, y, filtered_region_ppts, resolution))
-                            
-        # filter for empty pts
-        # td = time.time()
-        # print(f'    time to filter {len(latlon)} input pts: {td-tc:.2f}s')
-                
-        p = mp.Pool()
-        pts = p.map(process_shoreline_pts, inputs)
-        tc = time.time()
-        all_new_pts += [e for e in pts if e is not None]
-
-    tc = time.time()
-    print(f'     time to iterate through {tot_pts} points to yield {len(all_new_pts)} pts: {tc-tb:.2f}')
-    
-    rpts = region_ppts[['geometry']].copy()
-    all_pts_filtered = []
-    for pt in all_new_pts:
-        dists = rpts.distance(pt)
-        if (dists > 4 * resolution).all():
-            ptg = gpd.GeoDataFrame(geometry=[pt], crs='EPSG:3005')
-            # append the new point to the reference point dataframe to
-            # update the set of points checked against.
-            rpts = gpd.GeoDataFrame(pd.concat([rpts, ptg]), crs='EPSG:3005')
-            all_pts_filtered.append(pt)
-                    
-    new_pts = gpd.GeoDataFrame(geometry=all_pts_filtered, crs='EPSG:3005')    
-    new_pt_gdf = get_pt_indices(region, 'accum', new_pts, acc)
-    return new_pt_gdf
-
+        # print(f'{len(latlon)} points')
+        inputs = [(x, y, lake_geom) for x, y in latlon]
+        print(f'    checking {len(inputs)} pts')
+        if len(inputs) == 0:
+            print('skip')
+            continue
         
-regions = list(set([e.split('_')[0] for e in os.listdir(os.path.join(DATA_DIR, 'merged_basin_groups/region_polygons'))]))
+        # the line interpolation misses some cells,
+        # so check around each point for stream cells
+        # that aren't inside the lake polygon
+        pl = mp.Pool()
+        results = pl.map(find_link_ids, inputs)
+        results = [r for r in results if r is not None]
+        pl.close()
+        
+        pts = pd.DataFrame(results, columns=['geometry', 'link_id'])
+        # drop duplicate link_ids
+        pts = pts[~pts['link_id'].duplicated(keep='first')]
+        points_to_check += pts['geometry'].values.tolist()    
+                                
+    print(f'    {len(points_to_check)} points identified as potential lake inflows')
+    # foo = [p[0] for p in points_to_check]
+    fdf = gpd.GeoDataFrame(geometry=points_to_check, crs=f'EPSG:{crs}')
+    fdf.to_file(os.path.join(DATA_DIR, 'test_pts1.geojson'))
+    
+    n = 0
+    all_pts = []
+    for pt in points_to_check:
+        n += 1
+        if n % 250 == 0:
+            print(f'{n}/{len(points_to_check)} points checked.')
+        
+        # index_right is the lake id the point is contained in
+        # don't let adjacent points both be pour points
+        # but avoid measuring distance to points within lakes
+        nearest_neighbour = ppts.distance(pt).min()
 
+        # check the point is not within some distance (in m) of an existing point
+        min_spacing = 200
+        
+        if nearest_neighbour > min_spacing:
+            # check if the potential point is in any of the lakes
+            all_pts.append(pt)
+            
+            
+    new_pts = gpd.GeoDataFrame(geometry=all_pts, crs=f'EPSG:{crs}')
+    return gpd.GeoDataFrame(pd.concat([ppts, new_pts], axis=0), crs=f'EPSG:{crs}'), len(new_pts)
+    
+        
+regions = list(set([e.split('_')[0] for e in os.listdir(os.path.join(BASE_DIR, 'input_data/region_polygons'))]))
 regions = ['08P']
 
 for region in regions:
-    output_fname = f'{region}_pour_pts_filtered.geojson'
-    output_fpath = os.path.join(DATA_DIR, output_fname)
-    if os.path.exists(output_fpath):
-        print(f'   {region} already processed: {output_fname}')
-        continue
-    t0 = time.time()
     print(f'Processing {region}.')
+    
+    # import the stream link raster
+    stream, _, _ = retrieve_raster(region, 'link')
+        
+    resolution = abs(stream.rio.resolution()[0])
+    
+    ppt_folder = os.path.join(DATA_DIR, f'pour_points/{region}')
+    if not os.path.exists(ppt_folder):
+        os.mkdir(ppt_folder)
+    
+    output_fname = f'{region}_pour_pts_filtered.geojson'
+    output_fpath = os.path.join(ppt_folder, output_fname)
+    
+    # import pour points 
+    ppts_fpath = os.path.join(DATA_DIR, f'pour_points/{region}/{region}_pour_pts.geojson') 
+    region_ppts = gpd.read_file(ppts_fpath)
+    
+    t0 = time.time()
+    # if the NHN features haven't been clipped to the region polygon, do so now
     region_polygon = get_region_polygon(region)
-    region_lakes_fpath = os.path.join(DATA_DIR, f'region_waterbodies/{region}_waterbodies.geojson')
-    if not os.path.exists(region_lakes_fpath):
+    lakes_df_fpath = os.path.join(nhn_dir, f'{region}_lakes.geojson')
+    if not os.path.exists(lakes_df_fpath):
         print('    Creating region water bodies layer.')
         t1 = time.time()
-        ldf = gpd.read_file(lakes_fpath, mask=region_polygon)
+        
+        # import the NHN water body features
+        bbox_geom = tuple(region_polygon.to_crs(nhn_crs).bounds.values[0])
+        lake_features_box = gpd.read_file(nhn_fpath, engine='pyogrio', 
+                                      layer='nhn_hhyd_Waterbody_2', bbox=bbox_geom)
+        # clip features to the region polygon
+        region_polygon = region_polygon.to_crs(lake_features_box.crs)
+        lake_features = gpd.clip(lake_features_box, region_polygon, keep_geom_type=False)
         t2 = time.time()
         print(f'    Lakes layer opened in {t2-t1:.0f}s')
         print(f'    Creating lakes geometry file for {region}')
-        region_lakes = mask_lakes_by_region(region, region_polygon, ldf)
-        region_lakes = region_lakes.to_crs(3005)
-        region_lakes.to_file(region_lakes_fpath)
-        n_lakes = len(region_lakes)
+        lakes_df = filter_lakes(lake_features, region_ppts, resolution)
+        lakes_df = lakes_df[~lakes_df.geometry.is_empty]
+        lakes_df.to_file(lakes_df_fpath)
+        n_lakes = len(lakes_df)
         print(f'    File saved.  There are {n_lakes} water body objects in {region}.')
     else:
-        region_lakes = gpd.read_file(region_lakes_fpath)
-        
-    ppts_fpath = os.path.join(DATA_DIR, f'pour_points/{region}/{region}_pour_pts_CONF_RC.geojson') 
-    region_ppts = gpd.read_file(ppts_fpath)
-    
-    lakes_df = filter_ppts_by_lakes_geom(region, region_lakes, region_ppts)            
-
-    new_ppts = find_lake_inflows(region, region_polygon, lakes_df, region_ppts)    
+        lakes_df = gpd.read_file(lakes_df_fpath)
             
-    n_pts0 = len(region_ppts)
-    filtered_ppts = region_ppts[~region_ppts['in_lake']].copy()
-    n_pts1 = len(filtered_ppts)
+    lake_ppts = gpd.sjoin(region_ppts, lakes_df, how='left', predicate='within')
+    filtered_ppts = lake_ppts[lake_ppts['index_right'].isna()]
     
-    concat_df = pd.concat([filtered_ppts, new_ppts], join='outer', axis=0)
-    final_pts = gpd.GeoDataFrame(concat_df, crs='EPSG:3005')
-    n_final = len(final_pts)
+    print(f'    {len(filtered_ppts)}/{len(region_ppts)} confluence points are not in lakes ({len(region_ppts) - len(filtered_ppts)} points removed).')   
     
+    output_ppts, n_pts_added = add_lake_inflows(lakes_df, filtered_ppts, stream)
+            
+    n_pts0, n_pts1, n_final = len(region_ppts), len(filtered_ppts), len(output_ppts)
+        
     print(f'    {n_pts0-n_pts1} points eliminated (fall within lakes)')
-    print(f'    {len(new_ppts)} points added for lake inflows.')
+    print(f'    {n_pts_added} points added for lake inflows.')
     print(f'    {n_final} points after filter and merge. ({n_pts0-n_final} difference)')
     
-    
-    final_pts.to_file(output_fpath)
+    output_ppts.to_file(output_fpath)
     te = time.time()
     utime = n_final / (te-t0)
-    print(f'      {region} processed in {te-t0:.0f}s ({utime:.2f}pts/s)')  
+    print(f'{region} processed in {te-t0:.0f}s ({utime:.2f}pts/s)') 
+    print('-------------------------------------------------------') 
     print('')
-
     

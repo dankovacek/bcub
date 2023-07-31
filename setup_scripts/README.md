@@ -37,21 +37,36 @@ Clone the repository (from the root directory):
 &gt;`$ git clone https://github.com/dankovacek/bcub`
 
 Change directories to the `bcub` folder:  
-&gt;`cd basin_generator`
+&gt;`$ cd basin_generator`
 
 ### Create virtual environment and activate to install libraries
 
 Install pip:  
-&gt;`sudo apt install python3-pip`
+&gt;`$ sudo apt install python3-pip`
 
 Create virtual environment at the project root level directory:  
-&gt;`python3 -m venv env/`
+&gt;`$ python3 -m venv env/`
 
 Activate the virual environment:  
-&gt;`source env/bin/activate`
+&gt;`$ source env/bin/activate`
 
 Install Python packages:  
-&gt;`pip install -r requirements.txt`
+&gt;`$ pip install -r requirements.txt`
+
+High Performance Array Computing
+--------------------------------
+
+The basin delineation and attribute extraction steps take a lot of time.
+To speed up the process, namely for array computations on large basins,
+the Jax library is used to enable GPU computation. See [installation
+details](https://github.com/google/jax#pip-installation-gpu-cuda-installed-via-pip-easier)
+for more information. Alternatively, you can use the equivalent numpy
+functions where the Jax library is used.
+
+To get your system’s version of CUDA (on Linux): &gt;`$ nvidia-smi`
+
+![Where to find the CUDA version for Jax library
+installation.](../img/cuda_version.png)
 
 Data Acquisition and Processing
 -------------------------------
@@ -67,7 +82,7 @@ downloader](https://apps.nationalmap.gov/downloader/). A text file
 pre-populated with the links to covering tiles is provided in this repo.
 The tiles can be downloaded and merged into a virtual raster with gdal
 by running the `get_3DEP_DEM.py` script saved under `setup_scripts`:  
-&gt;`python get_3DEP_DEM.py`
+&gt;`$ python get_3DEP_DEM.py`
 
 > **Warning**<br> **The tile list urls will at some point change**:
 > After downloading, compare the study region polygon with the tile set
@@ -97,7 +112,7 @@ A zipped archive file of region polygons is provided in
 `input_data/region_polygons.zip`. Unzip the folder in its existing
 location.
 
-> `unzip input_data/region_polygons.zip -d input_data/region_polygons/`
+> `$ unzip input_data/region_polygons.zip -d input_data/region_polygons/`
 
 ![Merging process for complete sub-regions.](../img/merging_regions.png)
 
@@ -117,8 +132,8 @@ flow direction, accumulation, and stream network generation.
 
 Create the individual region DEM files using the provided region
 polygons and the DEM tile mosaic created in the previous step:  
-&gt;`cd setup_scripts/`  
-&gt;`python clip_region_DEM.py`
+&gt;`$ cd setup_scripts/`  
+&gt;`$ python clip_region_DEM.py`
 
 > **Note**<br> **Check the list of region polygons to process**: The dem
 > processing scripts are initialized to test just the smallest region
@@ -127,45 +142,60 @@ polygons and the DEM tile mosaic created in the previous step:
 
 Process the region DEMs to create rasters representing flow direction,
 flow accumulation, and stream network:  
-&gt;`python derive_flow_accumulation.py`
+&gt;`$ python derive_flow_accumulation.py`
 
 ### Generate pour points at confluences
 
 Using the stream raster, generate pour points at river confluences.
 Confluences are defined as stream cells with more than one inflow. An
 inflow is an adjacent stream cell whose flow direction points to the
-focal cell.  
-&gt;`python automate_pourpt_generation.py`
+focal cell. &gt;`$ python find_pour_points.py`
 
-### Hydrographic Features
+### Hydrographic features dataset
 
 The last step before basin delineation is to filter spurious pour
-points. First we download the hydrographic features dataset
+points.
+
+> **Note**<br> The hydrographic features file is large (14 GB, 29 GB
+> uncompressed) and may take a while to download. The file is not
+> included in this repository.
+
+First, download the hydrographic features dataset
 (\`rhn\_nhn\_hhyd.gpkg.zip\`\`) from the [National Hydrographic
 Network](https://open.canada.ca/data/en/dataset/a4b190fe-e090-4e6d-881e-b87956c07977).
 
-> **Note**<br> The hydrographic features file is large (**14 GB**) and
-> may take a while to download. The file is not included in this
-> repository. The file download is automated in the `lakes_filter.py`
-> script. The script will download the file to the `input_data` folder.
-> The script will not re-download the file if it already exists in the
-> `input_data` folder.
+Create a folder for the NHN data (*from the root directory*):
+&gt;`$ mkdir input_data/NHN_data` Specify the new directory as the
+destination for the download using wget (alternatively just visit the
+link and download the file manually):
+&gt;`$ wget https://ftp.maps.canada.ca/pub/nrcan_rncan/vector/geobase_nhn_rhn/gpkg_en/CA/rhn_nhn_hhyd.gpkg.zip -P input_data/NHN_data`
+Unzip the file:
+&gt;`$ unzip -j -d input_data/NHN_data input_data/NHN_data/rhn_nhn_hhyd.gpkg.zip`
+Remove the zip file:
+&gt;`$ rm input_data/NHN_data/rhn_nhn_hhyd.gpkg.zip`
+
+> **Warning**<br> **There is currently a bug preventing geopandas/fiona
+> from opening this file**: The bug seems to be related to this
+> [issue](https://github.com/Toblerity/Fiona/issues/1270). A PR appears
+> to have been submitted to resolve the issue, so check for updates. As
+> a workaround, the `pyogrio` engine is specified and a bounding box is
+> provided at import. see the `lakes_filter.py`.
 
 ### Filter spurious pour points
 
-Once the file is downloaded, the `lakes_filter` script then clips the
-NHN water bodies features to each sub-region polygon to reduce RAM
-usage. The water body polygons are then used to filter out (spurious)
-confluences in lakes. &gt;`python lakes_filter.py`
+Once the file is downloaded, the `lakes_filter` script will clip the NHN
+water bodies features to each sub-region polygon to reduce RAM usage.
+The water body polygons are then used to filter out (spurious)
+confluences in lakes. &gt;`$ python lakes_filter.py`
 
 ### Basin delineation
 
 The data preparation work is done. Now we generate large sample of
 basins to characterize the decision space (of candidate monitoring
-locations)
+locations).
 
 Generate a basin for each of the pour points:  
-&gt;`setup_scripts/python pysheds_derive_basin_polygons.py`
+&gt;`$ setup_scripts/python pysheds_derive_basin_polygons.py`
 
 ### Extract Attributes
 
