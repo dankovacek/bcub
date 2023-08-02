@@ -9,7 +9,12 @@ input_data/processed_dem/
 input_data/NHN_INDEX*/
 input_data/region_polygons/
 
-input_data/NHN_data/*.gpkg
-input_data/NHN_data/study_region_waterbodies.geojson
+input_data/NHN_data/*
+input_data/NALCMS/*
+input_data/GLHYMPS/*
+processed_data/basin_properties/
+processed_data/pour_points/*
+processed_data/derived_basins/
+
 
 __pycache__/

@@ -48,6 +48,8 @@ region_codes = sorted(list(set([e.split('_')[0] for e in region_files])))
 region_codes = ['08P']
 
 
+####  Add cell_idx, acc, etc. to the ppt_df
+
 def retrieve_raster(region, raster_type, crs=3005):
     filename = f'{region}_{DEM_source}_{crs}_{raster_type}.tif'
     raster_path = os.path.join(DEM_DIR, f'{filename}')
@@ -157,7 +159,7 @@ def create_pour_point_gdf(stream, ppt_df, crs):
     # from a large array seems to be memory intensive.
     conf_chunks = np.array_split(ppt_df, n_chunks)
     processed_chunks = []
-    for chunk in conf_chunks:        
+    for chunk in conf_chunks:
         ppts = stream[0, chunk['ix'].values, chunk['jx'].values]
         coords = tuple(map(tuple, zip(ppts.coords['x'].values, ppts.coords['y'].values)))
         chunk['geometry'] = [Point(p) for p in coords]

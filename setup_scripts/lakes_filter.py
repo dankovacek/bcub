@@ -119,8 +119,8 @@ def filter_lakes(lakes_df, ppts, resolution):
     lakes_df['area'] = lakes_df.geometry.area
     lakes_df['lake_id'] = lakes_df.index.values
         
-    # filter lakes smaller than 0.01 km^2
-    min_area = 10000
+    # filter lakes smaller than 0.1 km^2
+    min_area = 100000
     lakes_df = lakes_df[lakes_df['area'] > min_area]
     
     lakes_df = lakes_df[['acquisition_technique', 'lake_id', 'area', 'water_definition', 'planimetric_accuracy', 'permanency', 'geometry']]
@@ -143,7 +143,7 @@ def filter_lakes(lakes_df, ppts, resolution):
     # use negative and positive buffers to remove small "appendages"
     # that tend to add many superfluous inflow points
     distance = 100  # metres
-    lakes_with_pts.geometry = lakes_with_pts.buffer(-distance).buffer(distance * 1.5).simplify(resolution)
+    lakes_with_pts.geometry = lakes_with_pts.buffer(-distance).buffer(distance * 1.5).simplify(resolution/np.sqrt(2))
     lakes_with_pts['geometry'] = lakes_with_pts.apply(lambda row: trim_appendages(row), axis=1)
     lake_cols = ['acquisition_technique', 'lake_id', 'area', 
                  'water_definition', 'planimetric_accuracy', 'permanency', 'geometry']
@@ -210,17 +210,20 @@ def find_link_ids(target):
             return None
         
         raster_nonzero = nbr.where(nbr > 0, drop=True)
+        
         # Check surrounding cells for nonzero link_ids
         xs, ys = raster_nonzero.x.values, raster_nonzero.y.values
         for x1, y1 in zip(xs, ys):
             link_id = nbr.sel(x=x1, y=y1).squeeze().item()
+            ix, jx = np.argwhere(stream.x.values == x1)[0], np.argwhere(stream.y.values == y1)[0]
             pt = Point(x1, y1)
-            if ~np.isnan(link_id) & (not lake.contains(pt)):
-                return [Point(x1, y1), link_id]
+            if ~np.isnan(link_id):# & (not lake.contains(pt)):
+                return [ix, jx, f'{ix},{jx}', Point(x1, y1), link_id]
+            
     return None
             
 
-def add_lake_inflows(lakes_df, ppts, stream):
+def add_lake_inflows(lakes_df, ppts, stream, acc):
     
     n = 0
     tot_pts = 0
@@ -267,18 +270,17 @@ def add_lake_inflows(lakes_df, ppts, stream):
         results = [r for r in results if r is not None]
         pl.close()
         
-        pts = pd.DataFrame(results, columns=['geometry', 'link_id'])
+        pts = pd.DataFrame(results, columns=['ix', 'jx', 'cell_idx', 'geometry', 'link_id'])
         # drop duplicate link_ids
+        pts['CONF'] = True
         pts = pts[~pts['link_id'].duplicated(keep='first')]
-        points_to_check += pts['geometry'].values.tolist()    
+        points_to_check += [e for e in pts['geometry'].values.tolist() if e is not None]
                                 
     print(f'    {len(points_to_check)} points identified as potential lake inflows')
-    # foo = [p[0] for p in points_to_check]
-    fdf = gpd.GeoDataFrame(geometry=points_to_check, crs=f'EPSG:{crs}')
-    fdf.to_file(os.path.join(DATA_DIR, 'test_pts1.geojson'))
-    
+           
     n = 0
     all_pts = []
+    acc_vals = []
     for pt in points_to_check:
         n += 1
         if n % 250 == 0:
@@ -295,10 +297,11 @@ def add_lake_inflows(lakes_df, ppts, stream):
         if nearest_neighbour > min_spacing:
             # check if the potential point is in any of the lakes
             all_pts.append(pt)
-            
-            
-    new_pts = gpd.GeoDataFrame(geometry=all_pts, crs=f'EPSG:{crs}')
-    return gpd.GeoDataFrame(pd.concat([ppts, new_pts], axis=0), crs=f'EPSG:{crs}'), len(new_pts)
+            x, y = pt.x, pt.y
+            acc_val = acc.sel(x=x, y=y, method='nearest').item()
+            acc_vals.append(acc_val)
+    df = pd.DataFrame({'acc': acc_vals, 'geometry': all_pts})
+    return gpd.GeoDataFrame(df, crs=f'EPSG:{crs}')
     
         
 regions = list(set([e.split('_')[0] for e in os.listdir(os.path.join(BASE_DIR, 'input_data/region_polygons'))]))
@@ -309,6 +312,7 @@ for region in regions:
     
     # import the stream link raster
     stream, _, _ = retrieve_raster(region, 'link')
+    acc, _, _ = retrieve_raster(region, 'accum')
         
     resolution = abs(stream.rio.resolution()[0])
     
@@ -348,18 +352,18 @@ for region in regions:
         print(f'    File saved.  There are {n_lakes} water body objects in {region}.')
     else:
         lakes_df = gpd.read_file(lakes_df_fpath)
-            
+
     lake_ppts = gpd.sjoin(region_ppts, lakes_df, how='left', predicate='within')
     filtered_ppts = lake_ppts[lake_ppts['index_right'].isna()]
-    
+        
     print(f'    {len(filtered_ppts)}/{len(region_ppts)} confluence points are not in lakes ({len(region_ppts) - len(filtered_ppts)} points removed).')   
     
-    output_ppts, n_pts_added = add_lake_inflows(lakes_df, filtered_ppts, stream)
-            
+    new_pts = add_lake_inflows(lakes_df, filtered_ppts, stream, acc)
+    output_ppts = gpd.GeoDataFrame(pd.concat([filtered_ppts, new_pts], axis=0), crs=f'EPSG:{stream.rio.crs.to_epsg()}')
     n_pts0, n_pts1, n_final = len(region_ppts), len(filtered_ppts), len(output_ppts)
         
     print(f'    {n_pts0-n_pts1} points eliminated (fall within lakes)')
-    print(f'    {n_pts_added} points added for lake inflows.')
+    print(f'    {len(new_pts)} points added for lake inflows.')
     print(f'    {n_final} points after filter and merge. ({n_pts0-n_final} difference)')
     
     output_ppts.to_file(output_fpath)

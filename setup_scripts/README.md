@@ -53,8 +53,7 @@ Activate the virual environment:
 Install Python packages:  
 &gt;`$ pip install -r requirements.txt`
 
-High Performance Array Computing
---------------------------------
+### High Performance Array Computing
 
 The basin delineation and attribute extraction steps take a lot of time.
 To speed up the process, namely for array computations on large basins,
@@ -144,7 +143,8 @@ Process the region DEMs to create rasters representing flow direction,
 flow accumulation, and stream network:  
 &gt;`$ python derive_flow_accumulation.py`
 
-### Generate pour points at confluences
+Generate pour points
+--------------------
 
 Using the stream raster, generate pour points at river confluences.
 Confluences are defined as stream cells with more than one inflow. An
@@ -188,6 +188,33 @@ water bodies features to each sub-region polygon to reduce RAM usage.
 The water body polygons are then used to filter out (spurious)
 confluences in lakes. &gt;`$ python lakes_filter.py`
 
+Land cover and soil data layers
+-------------------------------
+
+Land cover rasters can be downloaded from the [North American Land
+Change Monitoring System
+(NALCMS)](http://www.cec.org/north-american-land-change-monitoring-system/).
+
+Download the files you want to work with from the link above, and keep
+note of the file path where the files are saved or save them to a new
+folder at `input_data/NALCMS/`. The files are large and may take a while
+to download. The files are not included in this repository.
+
+The soil permeability and porosity information is contained in the
+[GLobal HYdrogeology MaPS
+(GLHYMPS)](https://borealisdata.ca/dataset.xhtml?persistentId=doi%3A10.5683/SP2/TTJNIU)
+dataset. Download the files you want to work with from the link above,
+and keep note of the file path where the files are saved or save them to
+a new folder at `input_data/GLHYMPS/`. The file is large and may take a
+while to download. The files are not included in this repository.
+
+The GLHYMPS dataset contains global coverage, so you may first want to
+clip it to the bounding box of the study region. The bounding box is
+provided in the `input_data/` folder. The bounding box is a shapefile,
+so you can use QGIS or similar software to clip the GLHYMPS dataset and
+reproject. The clipped file should be saved to the `input_data/GLHYMPS/`
+folder.
+
 ### Basin delineation
 
 The data preparation work is done. Now we generate large sample of
@@ -195,9 +222,57 @@ basins to characterize the decision space (of candidate monitoring
 locations).
 
 Generate a basin for each of the pour points:  
-&gt;`$ setup_scripts/python pysheds_derive_basin_polygons.py`
+&gt;`$ setup_scripts/python derive_basins.py`
 
-### Extract Attributes
+This script will output a file in parquet format which is a compressed,
+columnar data format. To save in geojson format to read in QGIS, comment
+out the `to_parquet()` line and uncomment the next line
+`merged_basins.to_file(output_fpath.replace('.parquet', '.geojson'), driver='GeoJSON')`.
+
+Extract Attributes
+------------------
+
+Two methods are provided to extract attributes from the basins. The
+first, `extract_attributes.py`, extracts attributes from the basins and
+saves them to a `geojson` file. The second, `populate_postgis.py`, first
+creates a Postgres database with the PostGIS extension and then
+populates the database. The first method is more direct and easier to
+use, but the second method yields a format that is more performant for
+spatial querying.
+
+### Postgres & PostGIS
+
+The `populate_postgis.py` script assumes Postgres is installed, and a
+user (with password) and a database have been created.
+
+At the bottom of `populate_postgis.py`, there are four variables that
+are required to connec to the database. `db_host`, `db_name`, `db_user`,
+and `db_password`. Update these variables to match your database
+configuration.
+
+For a detailed walkthrough on setting up Postgres and PostGIS, see [this
+tutorial](https://www.digitalocean.com/community/tutorials/how-to-install-and-use-postgresql-on-ubuntu-22-04).
+
+> **Note**<br> `db_host` is typically localhost, but if you are
+> connecting to a remote database, you will need to update this
+> variable.
+
+#### Enable PostGIS
+
+Log into the database as the superuser (postgres) and enable the PostGIS
+extension: &gt;`$ sudo -u postgres psql`
+&gt;`postgres=# CREATE EXTENSION postgis;`
+
+Restart the database service: &gt;`$ sudo systemctl restart postgresql`
+
+### Set Up Postgres Database
+
+Create a database named `basins`:
+&gt;`$ sudo -u postgres createdb basins`
+
+Run the `populate_postgis.py` script to create the tables and populate
+the database. The schema should be automatically created from a parquet
+file, the `derive_basins.py` script was run first.
 
 Additional Notes
 ----------------
@@ -211,8 +286,6 @@ the maximum slope of the focal cell (in degrees), from Hill (1981).
 
 Next Steps
 ----------
-
-Attribute Extraction
 
 U.S. Geological Survey. 2020. “USGS 3D Elevation Program Digital
 Elevation Model.”

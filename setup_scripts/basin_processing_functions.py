@@ -1,64 +1,23 @@
 import os
 
-# from osgeo import gdal
-
-# high-performance array library and tools for GPU
-import jax.numpy as jnp
-
 from shapely.validation import make_valid
 
 import pandas as pd
 import numpy as np
-
-import rioxarray as rxr
-
-from scipy.stats.mstats import gmean
-
 os.environ['USE_PYGEOS'] = '0'
 import geopandas as gpd
+import rioxarray as rxr
+from scipy.stats.mstats import gmean
 
 from whitebox.whitebox_tools import WhiteboxTools
 
 wbt = WhiteboxTools()
 wbt.verbose = False
 
-
-ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-BASE_DIR = os.path.join(ROOT_DIR, 'basin_generator')
-
-ext_media_path = '/media/danbot/Samsung_T51/large_sample_hydrology'
-SOURCE_DATA_DIR = os.path.join(ext_media_path, 'common_data')
-
-# porosity and permeability sources
-# glhymps_fpath = os.path.join(ext_media_path, 'GLHYMPS/GLHYMPS.gdb')
-glhymps_fpath = os.path.join(SOURCE_DATA_DIR, 'GLHYMPS/GLHYMPS_clipped_4326.gpkg')
-
-# import NALCMS raster
-# land use / land cover
-nalcms_fpath = os.path.join(SOURCE_DATA_DIR, 'NALCMS_NA/NA_NALCMS_2010_v2_land_cover_30m/NA_NALCMS_2010_v2_land_cover_30m.tif')
-reproj_nalcms_path = os.path.join(SOURCE_DATA_DIR, 'NALCMS_NA/NA_NALCMS_2010_4326.tif')
-
 def retrieve_raster(fpath):
     rds = rxr.open_rasterio(fpath, masked=True, mask_and_scale=True)
     affine = rds.rio.transform()
     return rds, rds.rio.crs, affine
-
-if not os.path.exists(reproj_nalcms_path):
-    nalcms, nalcms_crs, nalcms_affine = retrieve_raster(nalcms_fpath)
-    print(f'   ...NALCMS imported, crs = {nalcms.rio.crs.to_epsg()}')
-    print('Reproject NALCMS raster')
-
-    warp_command = f'gdalwarp -q -s_srs "{nalcms.rio.crs.to_proj4()}" -t_srs EPSG:4326 -of gtiff {nalcms_fpath} {reproj_nalcms_path} -r bilinear -wo NUM_THREADS=ALL_CPUS'    
-    os.system(warp_command)
-
-# 
-print(f'Opening NALCMS raster:')
-nalcms, nalcms_crs, nalcms_affine = retrieve_raster(reproj_nalcms_path)
-print(f'   ...NALCMS imported, crs = {nalcms.rio.crs.to_epsg()}')
-
-
-DEM_source = 'USGS_3DEP'
-DEM_DIR = os.path.join(SOURCE_DATA_DIR, f'DEM_data/processed_dem/{DEM_source}/')
 
 
 def filter_and_explode_geoms(gdf, min_area):
@@ -70,42 +29,43 @@ def filter_and_explode_geoms(gdf, min_area):
 
                 
 def dump_poly(inputs):
-    raster_fpath, vector_fname, temp_folder, crs = inputs
+    """Take the polygon batches and create raster clips with each polygon.
+    Save the individual polygons as geojson files for later use.
+
+    Args:
+        inputs (array): raster file, vector file, temporary file folder, and the raster crs.
+
+    Returns:
+        string: list of filepaths for the clipped rasters.
+    """
+    raster_fpath, vector_fname, temp_folder, raster_crs = inputs
     
     polygons = gpd.read_file(vector_fname)
-    
+    polygon_crs = polygons.crs.to_epsg()
     output_fnames = []
     for i, _ in polygons.iterrows():
 
         bdf = polygons.iloc[[i]]
         id = int(bdf['VALUE'].values[0])
+        basin_fname = f'basin_temp_{id:05d}.geojson'
+        basin_fpath = os.path.join(temp_folder, basin_fname)        
         
-        if crs == 4326:
-            bdf = bdf.to_crs(crs)
+        if (not os.path.exists(basin_fpath)) | (raster_crs != polygon_crs):
+            bdf = bdf.to_crs(raster_crs)
             bdf.geometry = bdf.apply(lambda row: make_valid(row.geometry) if not row.geometry.is_valid else row.geometry, axis=1)    
-        else:
-            # bdf.geometry = bdf.geometry.buffer(0.0)
-            # bdf.geometry = bdf.apply(lambda row: make_valid(row.geometry) if not row.geometry.is_valid else row.geometry, axis=1)    
-            crs = 3005
-            
-        basin_fname = f'basin_temp_{id:05d}_{crs}.geojson'
-        basin_fpath = os.path.join(temp_folder, basin_fname)
-        bdf.to_file(basin_fpath)
+            bdf.to_file(basin_fpath)
              
         # New filename. Assumes input raster file has '.tif' extension
-        # Might need to change how you build the output filename        
+        # Might need to change how you build the output filename 
         raster_fname = raster_fpath.split('/')[-1]
         raster_fname = raster_fname.replace(".tif", f"_{int(id):05}.tif")
         fpath_out = os.path.join(temp_folder, raster_fname)
         
-        # Do the actual clipping
-        command = f'gdalwarp -s_srs epsg:{crs} -cutline {basin_fpath} -crop_to_cutline -multi -of gtiff {raster_fpath} {fpath_out} -wo NUM_THREADS=ALL_CPUS'
-        
-        os.system(command)
-        # g = gdal.Warp(fpath_out, raster_fpath, format="GTiff",
-        #                 cutlineDSName=basin_fpath,
-        #                 cropToCutline=True)
-        # # Return the filename
+        if not os.path.exists(fpath_out):
+            # Do the actual clipping
+            command = f'gdalwarp -s_srs {raster_crs} -cutline {basin_fpath} -crop_to_cutline -multi -of gtiff {raster_fpath} {fpath_out} -wo NUM_THREADS=ALL_CPUS'
+            os.system(command)
+        # Return the filename
         output_fnames.append(fpath_out)
 
     g = None
@@ -113,8 +73,21 @@ def dump_poly(inputs):
     return output_fnames
 
 
-def match_ppt_to_polygons_by_order(ppt_batch, polygon_df, resolution):
+def match_ppt_to_polygons_by_order(ppt_batch_path, polygon_df, resolution):
+    """The WBT "unnest_basins" function does not preserve order of polygons & pour points,
+    however the output contains a VALUE that can be used to match the polygon order
+    with the input pour point dataframe.  This function does that matching and returns
+    a dataframe with the polygon VALUE as the index.
 
+    Args:
+        ppt_batch (geodataframe): original batch of pour points
+        polygon_df (geodataframe): dataframe of basin polygons
+        resolution (tuple): source raster resolution for calculating area 
+
+    Returns:
+        geodataframe: geodataframe ordered by polygon VALUE to match the input pour point dataframe
+    """
+    ppt_batch = gpd.read_file(ppt_batch_path)
     try:
         assert len(ppt_batch) == len(polygon_df)
     except Exception as e:
@@ -132,11 +105,11 @@ def match_ppt_to_polygons_by_order(ppt_batch, polygon_df, resolution):
     polygon_df['cell_idx'] = ppt_batch['cell_idx'].values
 
     # polygon_df.reset_index(inplace=True, drop=True)
+    polygon_df['VALUE'] = polygon_df['VALUE'].astype(int)
     polygon_df.set_index('VALUE', inplace=True)
     polygon_df.sort_index(inplace=True)
     polygon_df.index.name = 'ID'
-
-
+    
     # Do I save ppt and polygon pair as individual files?  
     # is there better way to couple them for faster read/write?
     # for i, polygon in polygon_df[:5].iterrows():
@@ -192,10 +165,11 @@ def calculate_gravelius_and_perimeter(polygon):
     if area == 0:
         return np.nan, perimeter
     else:
-        perimeter_equivalent_circle = jnp.sqrt(4 * np.pi * area)
+        perimeter_equivalent_circle = np.sqrt(4 * np.pi * area)
         gravelius = perimeter / perimeter_equivalent_circle
     
     return gravelius, perimeter / 1000
+
 
 def check_lulc_sum(data):
     checksum = sum(list(data.values())) 
@@ -226,11 +200,11 @@ def get_value_proportions(data):
     all_vals = data.data.flatten()
     vals = all_vals[~np.isnan(all_vals)]
     n_pts = len(vals)
-    unique, counts = jnp.unique(vals, return_counts=True)
+    unique, counts = np.unique(vals, return_counts=True, size=256, fill_value=-9999)
     # create a dictionary of land cover values by coverage proportion
     # assuming raster pixels are equally sized, we can keep the
     # raster in geographic coordinates and just count pixel ratios
-    prop_dict = {k: 1.0*v/n_pts for k, v in zip(unique, counts)}
+    prop_dict = {int(k): 1.0*v/n_pts for k, v in zip(list(unique), list(counts)) if k != -9999}
     prop_dict = recategorize_lulc(prop_dict)
     return prop_dict
 
@@ -245,7 +219,6 @@ def process_lulc(raster_path):
     lulc_check = check_lulc_sum(prop_dict)
     prop_dict['lulc_check'] = lulc_check
     prop_dict['ID'] = i
-    os.remove(raster_path)
     return prop_dict
 
 
@@ -284,7 +257,7 @@ def get_soil_properties(merged, col):
 
 def process_glhymps(inputs):
     
-    i, row = inputs
+    i, row, glhymps_fpath = inputs
         
     soil_data = {}
     soil_data['ID'] = i        
@@ -296,7 +269,8 @@ def process_glhymps(inputs):
     gdf = gpd.read_file(glhymps_fpath, mask=basin_proj)
     # now clip to the basin polygon bounds
     clipped_soil = gpd.clip(gdf, mask=basin_proj)
-    # now reproject to minimize spatial distortion
+    
+    # now reproject to reduce spatial distortion for calculating areas
     clipped_soil = clipped_soil.to_crs(3005)
     
     porosity = get_soil_properties(clipped_soil, 'Porosity')
@@ -349,11 +323,11 @@ def calculate_circular_mean_aspect(ddx, ddy):
     a matrix of slopes. Return circular mean aspect in degrees.
     """
     A = (180 / np.pi)* np.arctan2(ddy, ddx)
-    n_angles = jnp.count_nonzero(~np.isnan(A))
-    sine_mean = jnp.divide(jnp.nansum(jnp.sin(jnp.radians(A))), n_angles)
-    cosine_mean = jnp.divide(jnp.nansum(jnp.cos(jnp.radians(A))), n_angles)
-    vector_mean = jnp.arctan2(sine_mean, cosine_mean)
-    aspect_degrees = jnp.degrees(vector_mean)
+    n_angles = np.count_nonzero(~np.isnan(A))
+    sine_mean = np.divide(np.nansum(np.sin(np.radians(A))), n_angles)
+    cosine_mean = np.divide(np.nansum(np.cos(np.radians(A))), n_angles)
+    vector_mean = np.arctan2(sine_mean, cosine_mean)
+    aspect_degrees = np.degrees(vector_mean)
     if aspect_degrees + 180 > 360:
         return aspect_degrees - 180
     else:
@@ -374,10 +348,10 @@ def process_basin_terrain_attributes(raster_path):
 
 def circular_mean_angle(A):
     A = np.where(A < 90, 90-A, 360 - (A-90))
-    x_mean = jnp.nanmean(np.cos(np.radians(A)))
-    y_mean = jnp.nanmean(np.sin(np.radians(A)))
+    x_mean = np.nanmean(np.cos(np.radians(A)))
+    y_mean = np.nanmean(np.sin(np.radians(A)))
     # mean angle (degrees, [-180, 180], CCW from east)
-    mean_angle = jnp.degrees(np.arctan2(y_mean, x_mean))
+    mean_angle = np.degrees(np.arctan2(y_mean, x_mean))
     # convert back to CW from north
     mean_angle = 90 - mean_angle
     mean_angle = (mean_angle + 360) % 360
@@ -408,10 +382,9 @@ def wbt_aspect(raster_path):
 
 def wbt_slope(raster_path):
     """
-    values are slightly different, WBT uses 5x5 matrix
-    and taylor polynomial expansion fit.
+    Values are slightly different between methods: 
+    WBT uses 5x5 matrix and taylor polynomial fit.
     Convolution is just 3x3 window.
-
     Values are consistent but slightly lower for WBT avg. slope.
     """
     out_path = raster_path.replace('.tif', '_slope.tif')
@@ -425,7 +398,7 @@ def wbt_slope(raster_path):
     raster, _, _ = retrieve_raster(out_path)
     S = raster.data[0]
     os.remove(out_path)
-    return jnp.nanmean(S)
+    return np.nanmean(S)
 
 
 def calc_slope_aspect(raster_path):
@@ -441,7 +414,7 @@ def calc_slope_aspect(raster_path):
     basin_data['Val_Slope_deg'] = round(wb_slope, 1)
     basin_data['Val_Aspect_deg'] = round(wb_aspect, 1)
 
-    return basin_data#, ta, tb, tc, wb_ms, mean_aspect
+    return basin_data
 
 
 def process_basin_shape_attributes(inputs):
@@ -466,8 +439,8 @@ def process_basin_shape_attributes(inputs):
 # concatenate all batches into a single geojson file
 def merge_geojson_files(files, output_fpath, temp_folder):
 
-    print('    Merging batch outputs to final output file!')
-    
+    print('    Merging batch outputs to final output file.')
+    print(f'creating output parquet file: {output_fpath}')
     batch_dfs = []
 
     files = sorted(list(set(files)))
@@ -477,15 +450,8 @@ def merge_geojson_files(files, output_fpath, temp_folder):
         layer = gpd.read_file(fpath)
         batch_dfs.append(layer)
         
-    all_data = gpd.GeoDataFrame(pd.concat(batch_dfs), crs=layer.crs)
-    all_data.to_file(output_fpath)
-    all_data.to_file(
-        output_fpath.replace('.geojson', '.gpkg'), 
-        driver='GPKG', 
-        layer=f'pour_points')
-        
-    # clean up temporary files
-    for f in list(set(files)):
-        os.remove(os.path.join(temp_folder, f))
+    return gpd.GeoDataFrame(pd.concat(batch_dfs), crs=layer.crs)
+
+
         
 

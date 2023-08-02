@@ -1,11 +1,8 @@
 # generate basins
-
-
 import os
 import time
-# import glob
-# import json
-
+import psutil
+import random
 
 import warnings
 warnings.filterwarnings('ignore')
@@ -14,8 +11,6 @@ import numpy as np
 import geopandas as gpd
 import pandas as pd
 import rioxarray as rxr
-
-import random
 
 import multiprocessing as mp
 
@@ -33,30 +28,54 @@ DEM_source = 'USGS_3DEP'
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEM_folder = os.path.join(BASE_DIR, 'input_data/processed_dem/')
-
 region_files = os.listdir(DEM_folder)
 region_codes = sorted(list(set([e.split('_')[0] for e in region_files])))
 
-DATA_DIR = os.path.join(BASE_DIR, 'processed_data/')
+#########################
+# update these file paths
+#########################
+common_data = '/home/danbot2/code_5820/large_sample_hydrology/common_data'
+nalcms_dir = os.path.join(BASE_DIR, 'input_data/NALCMS/')
+glhymps_dir = os.path.join(BASE_DIR, 'input_data/GLHYMPS/')
+nalcms_fpath = os.path.join(nalcms_dir, 'NA_NALCMS_2010_v2_land_cover_30m.tif')
+glhymps_fpath = os.path.join(glhymps_dir, 'GLHYMPS_clipped_4326.gpkg')
 
-glhymps_fpath = os.path.join(SOURCE_DATA_DIR, 'GLHYMPS/GLHYMPS_clipped_4326.gpkg')
-# import NALCMS raster
-# land use / land cover
-nalcms_fpath = os.path.join(SOURCE_DATA_DIR, 'NALCMS_NA/NA_NALCMS_2010_v2_land_cover_30m/NA_NALCMS_2010_v2_land_cover_30m.tif')
-reproj_nalcms_path = os.path.join(SOURCE_DATA_DIR, 'NALCMS_NA/NA_NALCMS_2010_4326.tif')
+# we need to reproject the NALCMS raster
+# and clip it to the region bounds
+reproj_nalcms_path = os.path.join(BASE_DIR, 'input_data/NALCMS/NA_NALCMS_landcover_2010_3005_clipped.tif')
+mask_path = os.path.join(BASE_DIR, 'input_data/region_polygons/region_bounds.geojson')
+
+
 if not os.path.exists(reproj_nalcms_path):
     nalcms, nalcms_crs, nalcms_affine = bpf.retrieve_raster(nalcms_fpath)
-    print(f'   ...NALCMS imported, crs = {nalcms.rio.crs.to_epsg()}')
-    print('Reproject NALCMS raster')
-
-    warp_command = f'gdalwarp -q -s_srs "{nalcms.rio.crs.to_proj4()}" -t_srs EPSG:3005 -of gtiff {nalcms_fpath} {reproj_nalcms_path} -r bilinear -wo NUM_THREADS=ALL_CPUS'    
-    os.system(warp_command)
+    raster_wkt = nalcms_crs.to_wkt()
+        
+    reproj_bounds = gpd.read_file(mask_path).to_crs(nalcms_crs)
+    reproj_bounds_path = os.path.join(BASE_DIR, 'input_data/region_polygons/region_bounds_reproj.shp')
+    reproj_bounds.to_file(reproj_bounds_path)
     
+    # first clip the raster, then reproject to EPSG 3005
+    print('Clipping NALCMS raster to region bounds.')
+    clipped_nalcms_path = os.path.join(BASE_DIR, 'input_data/NALCMS/NA_NALCMS_landcover_2010_clipped.tif')
+    clip_command = f"gdalwarp -s_srs '{raster_wkt}' -cutline {reproj_bounds_path} -crop_to_cutline -multi -of gtiff {nalcms_fpath} {clipped_nalcms_path} -wo NUM_THREADS=ALL_CPUS"
+    os.system(clip_command)
+    
+    print('\nReprojecting clipped NALCMS raster.')
+    warp_command = f"gdalwarp -q -s_srs '{raster_wkt}' -t_srs EPSG:3005 -of gtiff {clipped_nalcms_path} {reproj_nalcms_path} -r bilinear -wo NUM_THREADS=ALL_CPUS"
+    os.system(warp_command) 
+    
+    # remove the intermediate step
+    if os.path.exists(clipped_nalcms_path):
+        os.remove(clipped_nalcms_path)
+        
+
+nalcms, nalcms_crs, nalcms_affine = bpf.retrieve_raster(reproj_nalcms_path)
+
 
 DATA_DIR = os.path.join(BASE_DIR, 'processed_data/')
 
 def retrieve_raster(region):
-    filename = f'{region}_USGS_3DEP_3005_res1.tif'
+    filename = f'{region}_USGS_3DEP_3005.tif'
     fpath = os.path.join(DEM_folder, filename)
     raster = rxr.open_rasterio(fpath, mask_and_scale=True)
     crs = raster.rio.crs
@@ -109,7 +128,7 @@ def create_pour_point_gdf(stream, acc, pts, crs, n_chunks=2):
     conf_chunks = np.array_split(np.asarray(pts), indices_or_sections=n_chunks)
 
     point_array = []
-    acc_array, id_array = [], []
+    acc_array = []
 
     for chunk in conf_chunks:
 
@@ -127,6 +146,7 @@ def create_pour_point_gdf(stream, acc, pts, crs, n_chunks=2):
 
     gdf = gpd.GeoDataFrame(df, geometry=point_array, crs=crs)
     # print(f'Created dataframe with {len(gdf)} pour points')
+    del point_array, df, conf_chunks
     return gdf
 
 
@@ -136,18 +156,19 @@ def check_for_ppt_batches(batch_folder):
         return False
     existing_batches = os.listdir(batch_folder)
     return len(existing_batches) > 0
-        
+
 
 def create_ppt_file_batches(df, filesize, temp_ppt_filepath):    
 
     # divide the dataframe into chunks for batch processing
     # save the pour point dataframe to temporary filRes
     # and limit temporary raster files to ?GB / batch
-    batch_limit = 1E5
+    # batch_limit = 3E6
+    batch_limit = 5E5
+    # batch_limit = 5E5
     n_batches = int(filesize * len(df) / batch_limit) + 1
     print(f'        ...running {n_batches} batch(es) on {filesize:.1f}MB raster.')
     
-    # batch_paths, idx_batches = [], []
     batch_paths = []
     n = 0
     if len(df) * filesize < batch_limit:
@@ -185,49 +206,71 @@ def batch_basin_delineation(fdir_path, ppt_batch_path, temp_raster_path):
     )
 
 
-def raster_to_vector_basins_multi(temp_folder, raster_batch_file, output_polygon_path):
-    raster_batch_path = os.path.join(temp_folder, raster_batch_file)
-    # this function creates rasters of ordered sets of 
-    # non-overlapping basins
-    wbt.raster_to_vector_polygons(
-        raster_batch_path,
-        output_polygon_path,
-    )
+def match_ppt_to_polygons_by_geometry(ppt_batch, polygon_df, resolution, region, temp_folder):
+    """
+    Start with smallest polygons such that by process of elimination
+    we obtain unique polygon-pourpt pairs.
+    """
+    assert ppt_batch.crs == polygon_df.crs
 
+    for i, polygon in polygon_df.iterrows():
 
-def match_ppt_to_polygons_by_order(ppt_batch, polygon_df, resolution):
+        # check polygon validity
+        if not polygon.geometry.is_valid:
+            polygon.geometry = make_valid(polygon.geometry)
 
-    try:
-        assert len(ppt_batch) == len(polygon_df)
-    except Exception as e:
-        print(f' mismatched df lengths: ppt vs. polygon_df')
-        print(len(ppt_batch), len(polygon_df))
-        print('')
+        t0 = time.time()
+        acc = int(polygon.geometry.area / (resolution[0] * resolution[1]))
 
-    polygon_df['acc_polygon'] = (polygon_df.geometry.area / (resolution[0] * resolution[1])).astype(int)
-    polygon_df['ppt_acc'] = ppt_batch['acc'].values
-    polygon_df['acc_diff'] = polygon_df['ppt_acc'] - polygon_df['acc_polygon']
-    polygon_df['FLAG_acc_match'] = polygon_df['acc_diff'].abs() > 2
+        # basin = polygon_df.iloc[[i]]
+        
+        polygon_df.loc[i, 'FLAG_acc_match'] = True
+        polygon_df.loc[i, 'FLAG_no_ppt'] = False
+        ta = time.time()
+        found_pts = ppt_batch[ppt_batch.within(polygon.geometry)].copy()
+        tb = time.time()
+        # found_pts1 = gpd.sjoin(ppt_df, basin, how='inner', predicate='within')
+        # tc = time.time()
+        
+        if tb - ta > 10:
+            print(f'FIND TIME > 10s!! ({tb-ta:.1f}s), len={len(ppt_batch)}')
+        # print(f'   time a = {tb-ta:.3f}s tb={tc-tb:.3f}s')
+        if len(found_pts) == 0:
+            msg_area = polygon_df.loc[i, 'area'] /1E6
+            print(f'    NO PPT FOUND IN GEOMETRY for area {msg_area:.1f}!!  i={i}')
+            # print('')
+            polygon_df.loc[[i]]
+            # print('')
+            polygon_df.loc[i, 'FLAG_no_ppt'] = True
+        else:
+            found_pts['acc_diff'] = found_pts['acc'] - acc
+            closest_match_idx = found_pts['acc_diff'].abs().idxmin()
+            best_pt = found_pts[found_pts.index == closest_match_idx]
 
-    polygon_df['ppt_x'] = ppt_batch.geometry.x.values
-    polygon_df['ppt_y'] = ppt_batch.geometry.y.values
-    polygon_df['cell_idx'] = ppt_batch['cell_idx'].values
+            best_pt_cell_idx = best_pt['cell_idx'].values[0]
+            if best_pt_cell_idx == None:
+                print(best_pt)
 
-    polygon_df.reset_index(inplace=True, drop=True)
+            # update the polygon df with ppt index info (xy  coords, cell idx, flag)
+            polygon_df.loc[i, 'ppt_x'] = best_pt.geometry.x.values[0]
+            polygon_df.loc[i, 'ppt_y'] = best_pt.geometry.y.values[0]
+            polygon_df.loc[i, 'cell_idx'] = best_pt_cell_idx
+            polygon_df.loc[i, 'FLAG_acc_match'] = False
 
-    # is there better way to couple them for faster read/write?
-    # for i, polygon in polygon_df[:5].iterrows():
-
-    #     # check polygon validity
-    #     if not polygon.geometry.is_valid:
-    #         polygon.geometry = make_valid(polygon.geometry)
-
-    #     basin = polygon_df.iloc[[i]].copy()
-    #     ppt = ppt_batch.iloc[[i]].copy()
-
-    #     # to see that the ordering matches up, save ppt/basin geometry pairs
-    #     foo = gpd.GeoDataFrame(pd.concat([ppt, basin]), crs='EPSG:3005')
-    #     foo.to_file(os.path.join(temp_folder, f'{i}_temp_ppt_polygon_pair.geojson'))
+            a_diff_cells = best_pt['acc_diff'].values[0]
+            a_diff_pct = a_diff_cells / best_pt['acc'].values[0]
+            polygon_df.loc[i, 'acc_diff_cells'] = a_diff_cells
+            if (a_diff_cells > 2) & (a_diff_pct > 0.01):
+                # point could possibly be just outside??
+                # create a test to find out
+                # #     
+                print(f'    Area difference {a_diff_cells} > 5 cells & {a_diff_pct:.2f} > 1%')
+                busted_pt = polygon_df.loc[[i]].copy()
+                idx = busted_pt['cell_idx'].values[0]
+                fname = f'{region}_unmatched_{idx}.geojson'
+                busted_pt.to_csv(os.path.join(temp_folder, fname))
+                polygon_df.loc[i, 'FLAG_acc_match'] = True         
+                # raise Exception(f'Area difference {a_diff_cells} > expectation (5 cells) & {a_diff_pct:.2f} > 1%')
 
     return polygon_df
 
@@ -239,7 +282,6 @@ def clean_up_temp_files(temp_folder, batch_rasters):
     all_files = batch_rasters + nalcms_files + raster_clips + temp_files
     for f in list(set(all_files)):
         os.remove(os.path.join(temp_folder, f))
-
 
 def raster_to_vector_basins_batch(input):
 
@@ -270,36 +312,42 @@ def raster_to_vector_basins_batch(input):
         gdf = bpf.filter_and_explode_geoms(gdf, min_area)
 
     assert (gdf.geometry.geom_type == 'Polygon').all()
-        
-    gdf.drop(labels=['area'], inplace=True, axis=1)
-    gdf.to_file(polygon_path.replace('.shp', '.geojson'))
     
     return gdf
 
 
+def convert_to_parquet(merged_basins, output_fpath):
+    # we want to end up with multiple geometries:
+    # i) pour point, 2) basin polygon, 3) basin centroid
+    # we will use 'geom' as the pour point
+    # 
+    merged_basins['basin_geometry'] = merged_basins['geometry']
+    merged_basins['basin_centroid'] = merged_basins['geometry'].centroid
+    merged_basins['geometry'] = [Point(x, y) for x, y in zip(merged_basins['ppt_x'], merged_basins['ppt_y'])]
+    # convert to parquet format
+    merged_basins.to_parquet(output_fpath, index=True)
+    
+
 region_codes = [
     '08P', 
-    # '08O', 
-    # '07G','07U',  
+    # '08O',
+    # '07U', 
+    # '07G', 
     # '07O', 
     # '08G', 
-    # '08H', '08E', '08A', '08D', # done
-    # '09A', '08F', '08B', '08C', # done
+    # '08H', '08E', '08A', '08D', 
+    # '09A', '08F', '08B', '08C', 
     # '08N',
     # 'ERockies', 
-    # 'Peace',  
     # 'Fraser', 
+    # 'Peace', 
     # 'Liard', 
     ]
-
-# use this boolean dict to track selection of pour
-# points and avoid duplicate basin delineations
-combo_df = pd.DataFrame()
 
 idx_dict = {}
 tracker_dict = {}
 def main():    
-
+    out_crs = 3005
     min_basin_area = 1.0 # km^2
     rn = 0
     n_processed_basins = 0
@@ -314,9 +362,7 @@ def main():
 
         # get the file size in MB
         filesize = (os.path.getsize(fdir_path) >> 20 )
-        
-        # set up a folder for temporary files
-        
+
         temp_folder = os.path.join(DATA_DIR, f'derived_basins/{region}/temp/')        
         ppt_folder = os.path.join(DATA_DIR, f'pour_points/{region}/')
         output_polygon_folder = os.path.join(DATA_DIR, f'derived_basins/{region}')
@@ -325,30 +371,26 @@ def main():
             if not os.path.exists(f):
                 os.makedirs(f)
 
-        print(f'Processing {region} ({rn}/{len(region_codes)})')
+        print(f'Processing region {region} ({rn}/{len(region_codes)})')
 
         region_raster, region_raster_crs, _ = retrieve_raster(region)
         raster_resolution = tuple(abs(e) for e in region_raster.rio.resolution())
         
         print(f'    {region} raster crs = {region_raster_crs}.')
           
-        # Break the pour points into unique sets
-        # to avoid duplicate delineations
-        ppt_file = os.path.join(ppt_folder, f'{region}_pour_pts_filtered.geojson')
-        
-        ppt_gdf = gpd.read_file(ppt_file)
-        
-        ppt_crs = ppt_gdf.crs
-        print(f'    ppt crs = {ppt_crs}.')
+        # track the pour point indices:
+        #     these indices correspond to the region polygon rasters
+        #     but recall they were masked with the region polygons
+        #     using a buffer length equal to the DEM resolution
 
         # check for an output file to allow for partial updating
         # by tracking (unique) ppt indices
         output_folder = os.path.join(DATA_DIR, f'derived_basins/{region}/')
-        output_fpath = os.path.join(output_folder, f'{region}_processed_attributes.geojson')
+        
+        output_fpath = os.path.join(output_folder, f'{region}_basins.parquet')
         if os.path.exists(output_fpath):
-            print('Output file exists, skipping.')
             continue
-
+        
         # check if the ppt batches have already been created
         batch_folder = os.path.join(temp_folder, 'ppt_batches/')
         batches_exist = check_for_ppt_batches(batch_folder)
@@ -357,8 +399,22 @@ def main():
         # processing basins for each pour point.
         temp_ppt_filepath = os.path.join(batch_folder, f'temp_ppts.shp')
 
+        memory_info = psutil.virtual_memory()
+        available_memory = memory_info.available / 1E9
+
         if not batches_exist:
             print(f'    Generating new batch paths.')
+            # Break the pour points into unique sets
+            # to avoid duplicate delineations
+            ppt_file = os.path.join(ppt_folder, f'{region}_pour_pts_filtered.geojson')
+            
+            ppt_gdf = gpd.read_file(ppt_file)
+                        
+            # check that all pour point cell indices are unique
+            ppt_gdf.drop_duplicates(
+                subset=['cell_idx'], 
+                keep='first', inplace=True, ignore_index=True
+                )
             batch_ppt_paths = create_ppt_file_batches(ppt_gdf, filesize, temp_ppt_filepath)
         else:
             print(f'    Retrieving existing batch paths.')
@@ -366,175 +422,79 @@ def main():
             batch_ppt_paths = [os.path.join(batch_folder, f) for f in batch_ppt_files]
 
         n_batch_files = len(batch_ppt_paths)
-
-        batch_output_files = sorted([f for f in os.listdir(output_folder) if f.startswith(output_fpath.split('/')[-1].split('.')[0])])
-        if len(batch_output_files) > 0:
-            batch_matches = [b.replace('.geojson', '.shp').split('_')[-1] for b in batch_output_files]
-            batch_ppt_paths = list(sorted([f for f in batch_ppt_paths if f.split('_')[-1] not in batch_matches]))
-
+        batch_output_files = []
         for ppt_batch_path in batch_ppt_paths:
             t_batch_start = time.time()
             batch_no = int(ppt_batch_path.split('_')[-1].split('.')[0])
             print(f'  Starting processing {region} batch {batch_no}/{n_batch_files}')
             temp_fname = f'{region}_temp_raster.tif'
             temp_basin_raster_path = os.path.join(temp_folder, temp_fname)            
-            batch_output_fpath = output_fpath.replace('.geojson', f'_{batch_no:04d}.geojson')
-            
+            batch_output_fpath = output_fpath.replace('.parquet', f'_{batch_no:04d}.geojson')
             # creates the minimum set of rasters with non-overlapping polygons
-            batch_basin_delineation(fdir_path, ppt_batch_path, temp_basin_raster_path)
-            batch_rasters = sorted([e for e in sorted(os.listdir(temp_folder)) if e.endswith('.tif')])
-
-            # retrieve the batch pour point dataframe
-            ppt_batch = gpd.read_file(ppt_batch_path)
+            batch_rasters = sorted([e for e in os.listdir(temp_folder) if e.startswith(temp_fname.split('.')[0])])
+            if len(batch_rasters) <= 2:
+                batch_basin_delineation(fdir_path, ppt_batch_path, temp_basin_raster_path)
+                batch_rasters = sorted([e for e in sorted(os.listdir(temp_folder)) if e.endswith('.tif')])
 
             tb1 = time.time()
-      
-            print(f'    Basins delineated for {region} ppt batch {batch_no} in {(tb1-t_batch_start)/60:.1f}min. {len(batch_rasters)} raster sub-batches to process ({len(ppt_batch)}).')
+            print(f'    Basins delineated for {region} ppt batch {batch_no} in {(tb1-t_batch_start)/60:.1f}min. \n      {len(batch_rasters)} raster sub-batches to process.')
 
-            # process the raster batches in parallel
-            crs_array = [f'EPSG:{region_raster_crs}'] * len(batch_rasters)
-            # min_A_array = [min_basin_area] * len(batch_raster_fpaths)
-            resolution_array = [raster_resolution] * len(batch_rasters)
-            temp_folder_array = [temp_folder] * len(batch_rasters)
-            min_areas = [min_basin_area] * len(batch_rasters)
-            path_inputs = list(zip(batch_rasters, crs_array, resolution_array, min_areas, temp_folder_array))
-            
-            # Adjust the number of processes to your own system specs
             batch_size_GB = len(batch_rasters) * filesize / 1E3
-            if batch_size_GB < 15:
-                n_procs = 28
-            elif batch_size_GB < 20:
-                n_procs = 22
-            elif batch_size_GB < 25:
-                n_procs = 18
-            else:
-                n_procs = 12
-            print(f'    Setting n_procs={n_procs:.0f} For a batch size of {batch_size_GB:.1f}GB')
-
+            n_procs = max(1, int(np.floor((available_memory - 5) / batch_size_GB)) )
+            print(f'    Allocating {n_procs:.0f} processes for a batch size of {batch_size_GB:.1f}GB')
+            
+            # process the raster batches in parallel
+            path_inputs = ((br, f'EPSG:{region_raster_crs}', raster_resolution, min_basin_area, temp_folder) for br in batch_rasters)
+            
+            # use fewer processes here because step is already parallelized?
             p = mp.Pool(n_procs)
             trv0 = time.time()
+            # if len(all_polygon_paths) < 2:
             all_polygons = p.map(raster_to_vector_basins_batch, path_inputs)
-            trv1 = time.time()
-            print(f'    {trv1-trv0:.2f}s to convert {len(path_inputs)} rasters to vector basins.')
-            
             # concatenate polygons
-            trc0 = time.time()
             batch_polygons = gpd.GeoDataFrame(pd.concat(all_polygons), crs=region_raster_crs)
+            p.close()
+            
+            trv1 = time.time()
+            print(f'    {trv1-trv0:.2f}s to convert {len(batch_rasters)} rasters to vector basins.')            
+            
             # sort by VALUE to maintain ordering from ppt batching / raster basin unnesting operation
             batch_polygons.sort_values(by='VALUE', inplace=True)
             batch_polygons.reset_index(inplace=True, drop=True)
-            trc1 = time.time()
-            print(f'    {trc1-trc0:.2f}s to concatenate basin vectors.')
-                                              
-            # create raster subsets for extracting raster terrain features
-            rfname = f'{region}_USGS_3DEP_3005_res1.tif'
-            regional_raster_fpath = os.path.join(DEM_folder, rfname)
-            ct0 = time.time()
-            
-            temp_polygon_files = [f'temp_polygons_{int(n):05}.geojson' for n in range(1, len(batch_rasters) + 1)]
-            output_polygon_paths = [os.path.join(temp_folder, f) for f in temp_polygon_files]
-            
-            # create raster clips for each polygon
-            p = mp.Pool()
-            clipping_inputs = [(regional_raster_fpath, opp, temp_folder, region_raster_crs) for opp in output_polygon_paths]
-            clipped_raster_feature_sets = p.map(bpf.dump_poly, clipping_inputs)
-            clipped_raster_fnames = [item for sublist in clipped_raster_feature_sets for item in sublist]
-            ct1 = time.time()
-            print(f'    {ct1-ct0:.1f}s to create {len(clipped_raster_fnames)} clipped rasters.')
-            
-            # extract basin terrain attributes
-            p = mp.Pool()
-            tr0 = time.time()
-            terrain_data = p.map(bpf.process_basin_terrain_attributes, clipped_raster_fnames)
-            terrain_df = pd.DataFrame.from_dict(terrain_data)
-            terrain_df.set_index('ID', inplace=True)
-            terrain_df.sort_index(inplace=True)
-            tr1 = time.time()
-            print(f'    {(tr1-tr0)/60:.1f}min to process terrain attributes from {len(clipped_raster_fnames)} clipped rasters.')
-
-            tr0 = time.time()
-            
-            p = mp.Pool()
-            as_data = p.map(bpf.calc_slope_aspect, clipped_raster_fnames)
-            as_df = pd.DataFrame.from_dict(as_data)
-            as_df.set_index('ID', inplace=True)
-            as_df.sort_index(inplace=True)
-            tr1 = time.time()
-            print(f'    {(tr1-tr0)/60:.1f}min to process mean aspect and slope attributes from {len(clipped_raster_fnames)} clipped rasters.')
-            
-            
-            # process lulc (NALCMS))
-            ct0 = time.time()
-            reproj_polygon_paths = [e.replace('.shp', '_4326.geojson') for e in output_polygon_paths]
-            nalcms_clip_inputs = [(nalcms_fpath, opp, temp_folder, 4326) for opp in reproj_polygon_paths] 
-            p = mp.Pool()
-            clipped_lulc_sets = p.map(bpf.dump_poly, nalcms_clip_inputs)
-            clipped_lulc_fnames = [item for sublist in clipped_lulc_sets for item in sublist]
-            
-            p = mp.Pool()
-            lulc_data = p.map(bpf.process_lulc, clipped_lulc_fnames)
-            lulc_df = pd.DataFrame.from_dict(lulc_data)
-            lulc_df.set_index('ID', inplace=True)
-                        
-            ct1 = time.time()
-            p = None
-            print(f'    {(ct1-ct0)/60:.2f}min to create {len(clipped_lulc_fnames)} clipped NALCMS rasters.')
             
             # if ordering is correct, we don't have to do this step
             # we can instead just iterate over polygons, derive attributes,
             # assign values to ppt dataframe.
             # add the pour point location info to each polygon
-            batch_polygons = bpf.match_ppt_to_polygons_by_order(ppt_batch, batch_polygons, raster_resolution)           
-            bp_inputs = [(i, row) for i, row in batch_polygons.iterrows()]  
-            n_processed_basins += len(batch_polygons)
-            
-            # extract basin polygon geometry attributes 
-            ts = time.time()           
-            p = mp.Pool()
-            shape_results = p.map(bpf.process_basin_shape_attributes, bp_inputs)
-            shape_df = pd.DataFrame.from_dict(shape_results)
-            shape_df.set_index('ID', inplace=True)
-            shape_df.sort_index(inplace=True)
-            ts1 = time.time()
-            print(f'    {(ts1-ts):.1f}s to process {len(shape_df)} shape attributes.')
-            
-            # process soil properties (GLHYMPS)
-            ct0 = time.time()
-            p = mp.Pool()
-            glhymps_data = p.map(bpf.process_glhymps, bp_inputs)
-            glhymps_df = pd.DataFrame.from_dict(glhymps_data)
-            glhymps_df.set_index('ID', inplace=True)
-            
-            ct1 = time.time()
-            print(f'    {ct1-ct0:.2f}s to process GLHYMPS attributes.')
-            
-            # combine all the attribute results
-            all_data = pd.concat([shape_df, terrain_df, as_df, lulc_df, glhymps_df], join='inner', axis=1)
-            comb_df = gpd.GeoDataFrame(all_data, crs=region_raster_crs)
-            comb_df.drop(labels=['FID'], inplace=True, axis=1)
-            
-            t_end = time.time()
-            unit_time = (t_end - t_batch_start) / (len(batch_polygons))
-            comb_df.to_file(batch_output_fpath)
-            print(f'    ...batch processed in {(t_end-t_batch_start)/60:.1f} min ({unit_time:.2f})s/basin...{region}\n')
-            
+            batch_polygons = bpf.match_ppt_to_polygons_by_order(ppt_batch_path, batch_polygons, raster_resolution)
+            batch_polygons.to_file(batch_output_fpath)
             batch_output_files.append(batch_output_fpath)
-            
-            # remove all temporary files (don't delete the raster batches yet!)
+                                              
+            # clean up the temporary files
             clean_up_temp_files(temp_folder, batch_rasters)
-            
-            
         
-        bpf.merge_geojson_files(batch_output_files, output_fpath, output_polygon_folder)
+        
+        merged_basins = bpf.merge_geojson_files(batch_output_files, output_fpath, output_polygon_folder)
+        # output the file in parquet format
+        
+        convert_to_parquet(merged_basins, output_fpath)
+        
+        # merged_basins.to_file(output_fpath.replace('.parquet', '.geojson'), driver='GeoJSON')
+        
         t_n = time.time()
         n_processed_basins = max(1, n_processed_basins)
         ut = (t_n - t0) / n_processed_basins
         print(f'Total processing time for {region}: {t_n-t0:.1f}s ({ut:.2f}/basin).')
-
+        
+        for f in batch_output_files:
+            os.remove(f)
+        for f in os.listdir(batch_folder):
+            os.remove(os.path.join(batch_folder, f))
+        os.rmdir(batch_folder)
+        os.rmdir(temp_folder)
         print('')
         print('      ------------------------------------')
         print('')
-            
             
 
 if __name__ == '__main__':
