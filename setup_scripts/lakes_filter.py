@@ -198,11 +198,12 @@ def redistribute_vertices(geom, distance):
 
 
 def find_link_ids(target):
-    x, y, lake = target
+    x, y = target
     stream_loc = stream.sel(x=x, y=y).squeeze()
     link_id = stream_loc.item()
     if ~np.isnan(link_id):
-        return [Point(x, y), link_id]
+        i, j = np.argwhere(stream.x.values == x)[0], np.argwhere(stream.y.values == y)[0]
+        return [i[0], j[0], f'{i[0]},{j[0]}', Point(x, y), link_id]
     else:
         nbr = stream.rio.clip_box(x-resolution, y-resolution, x+resolution,y+resolution)
         
@@ -214,11 +215,15 @@ def find_link_ids(target):
         # Check surrounding cells for nonzero link_ids
         xs, ys = raster_nonzero.x.values, raster_nonzero.y.values
         for x1, y1 in zip(xs, ys):
-            link_id = nbr.sel(x=x1, y=y1).squeeze().item()
+            link_id = nbr.sel(x=x1, y=y1, method='nearest', tolerance=resolution).squeeze().item()
             ix, jx = np.argwhere(stream.x.values == x1)[0], np.argwhere(stream.y.values == y1)[0]
-            pt = Point(x1, y1)
-            if ~np.isnan(link_id):# & (not lake.contains(pt)):
-                return [ix, jx, f'{ix},{jx}', Point(x1, y1), link_id]
+            
+            # check if point is valid
+            if np.isnan(ix) | np.isnan(jx):
+                print(x, y, xs, ys, link_id)
+                print(ix, jx)
+            if ~np.isnan(link_id):
+                return [ix[0], jx[0], f'{ix[0]},{jx[0]}', Point(x1, y1), link_id]
             
     return None
             
@@ -255,10 +260,8 @@ def add_lake_inflows(lakes_df, ppts, stream, acc):
         #           ii) not on a stream link already recorded
         px_pts = stream.sel(x=xs, y=ys, method='nearest', tolerance=resolution)
         latlon = list(set(zip(px_pts.x.values, px_pts.y.values)))
-        # print(f'{len(latlon)} points')
-        inputs = [(x, y, lake_geom) for x, y in latlon]
-        print(f'    checking {len(inputs)} pts')
-        if len(inputs) == 0:
+        print(f'    checking {len(latlon)} pts')
+        if len(latlon) == 0:
             print('skip')
             continue
         
@@ -266,7 +269,7 @@ def add_lake_inflows(lakes_df, ppts, stream, acc):
         # so check around each point for stream cells
         # that aren't inside the lake polygon
         pl = mp.Pool()
-        results = pl.map(find_link_ids, inputs)
+        results = pl.map(find_link_ids, latlon)
         results = [r for r in results if r is not None]
         pl.close()
         
@@ -274,14 +277,19 @@ def add_lake_inflows(lakes_df, ppts, stream, acc):
         # drop duplicate link_ids
         pts['CONF'] = True
         pts = pts[~pts['link_id'].duplicated(keep='first')]
-        points_to_check += [e for e in pts['geometry'].values.tolist() if e is not None]
+        pts.dropna(subset='geometry', inplace=True)
+            
+        points_to_check += [pts]
                                 
     print(f'    {len(points_to_check)} points identified as potential lake inflows')
            
     n = 0
     all_pts = []
     acc_vals = []
-    for pt in points_to_check:
+    all_points_df = gpd.GeoDataFrame(pd.concat(points_to_check, axis=0), crs=f'EPSG:{crs}')
+    for i, row in all_points_df.iterrows():
+        
+        pt = row['geometry']
         n += 1
         if n % 250 == 0:
             print(f'{n}/{len(points_to_check)} points checked.')
@@ -292,16 +300,16 @@ def add_lake_inflows(lakes_df, ppts, stream, acc):
         nearest_neighbour = ppts.distance(pt).min()
 
         # check the point is not within some distance (in m) of an existing point
-        min_spacing = 200
-        
+        min_spacing = 500        
         if nearest_neighbour > min_spacing:
-            # check if the potential point is in any of the lakes
-            all_pts.append(pt)
+            all_pts.append(i)
             x, y = pt.x, pt.y
             acc_val = acc.sel(x=x, y=y, method='nearest').item()
             acc_vals.append(acc_val)
-    df = pd.DataFrame({'acc': acc_vals, 'geometry': all_pts})
-    return gpd.GeoDataFrame(df, crs=f'EPSG:{crs}')
+            
+    all_points = all_points_df.iloc[all_pts].copy()
+    all_points['acc'] = acc_vals
+    return all_points
     
         
 regions = list(set([e.split('_')[0] for e in os.listdir(os.path.join(BASE_DIR, 'input_data/region_polygons'))]))
@@ -359,6 +367,7 @@ for region in regions:
     print(f'    {len(filtered_ppts)}/{len(region_ppts)} confluence points are not in lakes ({len(region_ppts) - len(filtered_ppts)} points removed).')   
     
     new_pts = add_lake_inflows(lakes_df, filtered_ppts, stream, acc)
+    
     output_ppts = gpd.GeoDataFrame(pd.concat([filtered_ppts, new_pts], axis=0), crs=f'EPSG:{stream.rio.crs.to_epsg()}')
     n_pts0, n_pts1, n_final = len(region_ppts), len(filtered_ppts), len(output_ppts)
         

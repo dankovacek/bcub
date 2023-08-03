@@ -206,75 +206,6 @@ def batch_basin_delineation(fdir_path, ppt_batch_path, temp_raster_path):
     )
 
 
-def match_ppt_to_polygons_by_geometry(ppt_batch, polygon_df, resolution, region, temp_folder):
-    """
-    Start with smallest polygons such that by process of elimination
-    we obtain unique polygon-pourpt pairs.
-    """
-    assert ppt_batch.crs == polygon_df.crs
-
-    for i, polygon in polygon_df.iterrows():
-
-        # check polygon validity
-        if not polygon.geometry.is_valid:
-            polygon.geometry = make_valid(polygon.geometry)
-
-        t0 = time.time()
-        acc = int(polygon.geometry.area / (resolution[0] * resolution[1]))
-
-        # basin = polygon_df.iloc[[i]]
-        
-        polygon_df.loc[i, 'FLAG_acc_match'] = True
-        polygon_df.loc[i, 'FLAG_no_ppt'] = False
-        ta = time.time()
-        found_pts = ppt_batch[ppt_batch.within(polygon.geometry)].copy()
-        tb = time.time()
-        # found_pts1 = gpd.sjoin(ppt_df, basin, how='inner', predicate='within')
-        # tc = time.time()
-        
-        if tb - ta > 10:
-            print(f'FIND TIME > 10s!! ({tb-ta:.1f}s), len={len(ppt_batch)}')
-        # print(f'   time a = {tb-ta:.3f}s tb={tc-tb:.3f}s')
-        if len(found_pts) == 0:
-            msg_area = polygon_df.loc[i, 'area'] /1E6
-            print(f'    NO PPT FOUND IN GEOMETRY for area {msg_area:.1f}!!  i={i}')
-            # print('')
-            polygon_df.loc[[i]]
-            # print('')
-            polygon_df.loc[i, 'FLAG_no_ppt'] = True
-        else:
-            found_pts['acc_diff'] = found_pts['acc'] - acc
-            closest_match_idx = found_pts['acc_diff'].abs().idxmin()
-            best_pt = found_pts[found_pts.index == closest_match_idx]
-
-            best_pt_cell_idx = best_pt['cell_idx'].values[0]
-            if best_pt_cell_idx == None:
-                print(best_pt)
-
-            # update the polygon df with ppt index info (xy  coords, cell idx, flag)
-            polygon_df.loc[i, 'ppt_x'] = best_pt.geometry.x.values[0]
-            polygon_df.loc[i, 'ppt_y'] = best_pt.geometry.y.values[0]
-            polygon_df.loc[i, 'cell_idx'] = best_pt_cell_idx
-            polygon_df.loc[i, 'FLAG_acc_match'] = False
-
-            a_diff_cells = best_pt['acc_diff'].values[0]
-            a_diff_pct = a_diff_cells / best_pt['acc'].values[0]
-            polygon_df.loc[i, 'acc_diff_cells'] = a_diff_cells
-            if (a_diff_cells > 2) & (a_diff_pct > 0.01):
-                # point could possibly be just outside??
-                # create a test to find out
-                # #     
-                print(f'    Area difference {a_diff_cells} > 5 cells & {a_diff_pct:.2f} > 1%')
-                busted_pt = polygon_df.loc[[i]].copy()
-                idx = busted_pt['cell_idx'].values[0]
-                fname = f'{region}_unmatched_{idx}.geojson'
-                busted_pt.to_csv(os.path.join(temp_folder, fname))
-                polygon_df.loc[i, 'FLAG_acc_match'] = True         
-                # raise Exception(f'Area difference {a_diff_cells} > expectation (5 cells) & {a_diff_pct:.2f} > 1%')
-
-    return polygon_df
-
-
 def clean_up_temp_files(temp_folder, batch_rasters):    
     temp_files = [f for f in os.listdir(temp_folder) if 'temp' in f]
     nalcms_files = [e for e in os.listdir(temp_folder) if e.startswith('NA_NALCMS')]
@@ -319,17 +250,17 @@ def raster_to_vector_basins_batch(input):
 def convert_to_parquet(merged_basins, output_fpath):
     # we want to end up with multiple geometries:
     # i) pour point, 2) basin polygon, 3) basin centroid
-    # we will use 'geom' as the pour point
-    # 
+    # these column names must match the names mapped to geometry
+    # columns in the populate_postgis file
     merged_basins['basin_geometry'] = merged_basins['geometry']
-    merged_basins['basin_centroid'] = merged_basins['geometry'].centroid
+    merged_basins['centroid_geometry'] = merged_basins['geometry'].centroid
     merged_basins['geometry'] = [Point(x, y) for x, y in zip(merged_basins['ppt_x'], merged_basins['ppt_y'])]
     # convert to parquet format
     merged_basins.to_parquet(output_fpath, index=True)
     
 
 region_codes = [
-    '08P', 
+    '08P',
     # '08O',
     # '07U', 
     # '07G', 

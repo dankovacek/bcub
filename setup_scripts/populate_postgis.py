@@ -21,23 +21,23 @@ dtype_dict = {
 }
 
 geom_dict = {
-    'geometry': 'geom',
-    'centroid_geometry': 'centroid',
     'basin_geometry': 'basin',
-}   
+    'centroid_geometry': 'centroid',
+    'geometry': 'pour_pt',
+}
 
 def create_table_initialization_query(parquet_schema, schema_name, db_host, db_name, db_user, db_password):
     conn = psycopg2.connect(host=db_host, dbname=db_name, user=db_user, password=db_password)
     cur = conn.cursor()
+    cur.execute('CREATE EXTENSION IF NOT EXISTS postgis;')
+    conn.commit()
     cur.execute(f'CREATE SCHEMA IF NOT EXISTS {schema_name};')
+    conn.commit()
     print('    Schema created.')
     # metadata = parquet_schema.metadata
         # Create a list of column names and types
     geom_columns = [c for c in parquet_schema.names if 'geometry' in c]
     
-    # print(geom_columns)
-    # print(asdfsd)
-
     # despite no geometry types of multipolygon found, 
     # multipolygon type error for polygon specified column persists
     # to fix, try switching to generic Geometry type:
@@ -45,8 +45,8 @@ def create_table_initialization_query(parquet_schema, schema_name, db_host, db_n
 
     q = f'''CREATE TABLE IF NOT EXISTS {schema_name}.basin_attributes (
         id SERIAL PRIMARY KEY,
-        geom geometry(POINT, 3005),
         centroid geometry(POINT, 3005),
+        pour_pt geometry(POINT, 3005),
         basin geometry(POLYGON, 3005),
         '''
         
@@ -54,24 +54,26 @@ def create_table_initialization_query(parquet_schema, schema_name, db_host, db_n
     column_types = []
     for field in parquet_schema:
         ###
-
-        ### this needs to be changed to set dtypes manually
-
+        ### check if dtypes are correct!
         ####
         if field.name not in geom_columns:
             column_names.append(field.name)
             column_types.append(dtype_dict[field.type])
 
     for col, col_type in zip(column_names, column_types):
+        if col == '__index_level_0__':
+            continue
         if col == 'ID':
             col = 'object_id'
         if col not in geom_columns:
             q += f' {col} {col_type},'
+            print(f'    Added column {col} of type {col_type} to table.')
+            
     q = q[:-1] + ');'
     cur.execute(q)
     conn.commit()
     conn.close()
-    print('    Table created: basin_attributes.')
+    print('    Table created: "basin_attributes"')
     
 
 def populate_table_columns(df, schema_name, geometry_cols, non_geo_cols, db_host, db_name, db_user, db_password):
@@ -86,6 +88,8 @@ def populate_table_columns(df, schema_name, geometry_cols, non_geo_cols, db_host
         col_name = geom_dict[gc]
         if gc == 'basin_geometry':
             geom_type = 'POLYGON'
+            
+        print(f'geom type: {gc} = {geom_type}')
         
         print(f'     {gc} will be converted to geometry({geom_type}, {crs}).')
         cur.execute(f'ALTER TABLE {schema_name}.{table_name} ADD COLUMN IF NOT EXISTS {col_name} geometry({geom_type},{crs});')
@@ -96,21 +100,25 @@ def populate_table_columns(df, schema_name, geometry_cols, non_geo_cols, db_host
             cur.execute(f"UPDATE {schema_name}.{table_name} SET {col_name} = ST_PointFromWKB(decode({col_name}, 'hex'));")
     
     # add non-geometry columns to the table
+    nc = 0
     for c in non_geo_cols:
+        nc += 1
         table_name = 'basin_attributes'
         dtype_name = df[c].dtype.name
         dtype = dtype_dict[dtype_name]
-        if c in ['lulc_check', 'flag_acc_match']:
+        if c in ['FLAG_acc_match']:
             dtype = 'BIT'
         
         if c == 'ID': 
             c = 'object_id'
             dtype = 'INT'
-        
+            
+        print(f'{nc}: non geo: {c}, dtype = {dtype}',)
+
         # print(f'   {c} is of type {dtype_name} and will be converted to {dtype}.')
         cur.execute(f'ALTER TABLE {schema_name}.{table_name} ADD COLUMN IF NOT EXISTS {c} {dtype};')
     print('     Added ALL columns to table.')
-
+    # print(asdfds)
     conn.commit()
     conn.close()
 
@@ -118,6 +126,7 @@ def populate_table_columns(df, schema_name, geometry_cols, non_geo_cols, db_host
 def test_query(schema_name, db_host, db_name, db_user, db_password):
     conn = psycopg2.connect(host=db_host, dbname=db_name, user=db_user, password=db_password)
     q = f"select id, geom from {schema_name}.basin_attributes order by id desc limit 4"
+    
     try:
         test_df = gpd.read_postgis(q, conn, geom_col='geom')
     except Exception as e:
@@ -165,14 +174,13 @@ def spatial_repartition(df, schema, fc, nparts):
         )
 
 def reformat_geom_cols(df, geometry_cols, nparts):
-    # encode geometries to wkb
+    # encode geometries to well known binary
     for c in geometry_cols:
         df[c+'_wkb'] = df[c].to_wkb(hex=True)
 
     # drop original geometry columns    
-    drop_cols = ['geometry', 'basin_geometry', 'centroid_geometry']    
+    drop_cols = ['geometry', 'centroid_geometry', 'basin_geometry']    
     df = df.drop(labels=drop_cols, axis=1)
-    # return dgp.from_geopandas(df.compute(), npartitions=nparts)
     return df.compute()
 
 
@@ -195,14 +203,10 @@ def convert_parquet_to_postgis_db(parquet_dir, db_host, db_name, db_user, db_pas
             raise Exception(f'No parquet files found in {parquet_dir}.')
 
         parquet_schema = pq.read_schema(os.path.join(test_dir, test_file[0]))
-        
-        print(parquet_schema)
-        print(asdfsd)
 
         print(f'    Postgis database table is empty, creating table and populating columns...')
         create_table_initialization_query(parquet_schema, schema_name, db_host, db_name, db_user, db_password)
-        populate_table_columns(df, schema_name, geometry_cols, non_geo_cols, db_host, db_name, db_user, db_password)
-    
+
     update_constraint(schema_name, db_host, db_name, db_user, db_password)
     
     minx, miny, maxx, maxy = total_bounds
@@ -212,9 +216,6 @@ def convert_parquet_to_postgis_db(parquet_dir, db_host, db_name, db_user, db_pas
     maxx = int(np.ceil(maxx / divisor) * divisor)
     maxy = int(np.ceil(maxy / divisor) * divisor)
 
-
-    # print(folders)
-    # print(asdf)
     # completed = ['08A', '07U', '08F', 'ERockies', '08H', 
     # '08B', '09A', '07O', '08O', '08P', 
     # '08G', '07G', '08H', '08D', '08N', 
@@ -226,28 +227,23 @@ def convert_parquet_to_postgis_db(parquet_dir, db_host, db_name, db_user, db_pas
         nparts = len(os.listdir(fpath))
         print(f'    Loading file {fpath}...')
         df = load_file_dgp(fpath, parquet_schema)
-        
-
-        t3 = time()
-
-        # find all multipolygons
-        # multi = df[df['geometry'].geom_type == 'MultiPolygon'].compute().copy()
-        # if len(multi) > 0:
-        #     print(len(multi))
-        #     print(multi)
-        #     print(asdfsadf)
-
+                        
         geometry_cols = [c for c in df.columns if 'geometry' in c]
         non_geo_cols = [c for c in df.columns if 'geometry' not in c]
-        non_geo_cols = [c for c in non_geo_cols if c != 'ID']
-        non_geo_cols = [c for c in non_geo_cols if c != 'index']
+        
+        # non_geo_cols = [c for c in non_geo_cols if c != 'ID']        
+        # non_geo_cols = [c for c in non_geo_cols if c != 'index']
 
         if len(non_geo_cols) > len(set(non_geo_cols)):
             raise Exception('Duplicated column names in non-geometry columns.')
+        
+        if not db_initialized:
+            populate_table_columns(df, schema_name, geometry_cols, non_geo_cols, db_host, db_name, db_user, db_password)
 
+        t3 = time()
         df = reformat_geom_cols(df, geometry_cols, nparts)
         t4 = time()
-        
+                
         print(f'   Dask geopandas converted columns to wkb in {t4-t3:.2f} seconds.')
         
         # populate non-geometry values
@@ -259,24 +255,16 @@ def convert_parquet_to_postgis_db(parquet_dir, db_host, db_name, db_user, db_pas
         print('    Database connected...')
         
         all_cols = [geom_dict[e] for e in geometry_cols] + non_geo_cols
-        # print(all_cols)
+        
         # res = df.apply(insert_vals_to_db, cur=cur, geom_cols=geometry_cols, non_geo_cols=non_geo_cols, axis=1)
         tuples = list(df[[e+'_wkb' for e in geometry_cols] + non_geo_cols].itertuples(index=False, name=None))
+
         for i in range(len(all_cols)):
             if all_cols[i] not in ['centroid', 'basin', 'geometry', 'geom', 'basin_geometry', 'centroid_geometry']: 
                 print(all_cols[i], tuples[0][i])
         
-        # insert the array of tuples into the db but 
-        # handle the case where the tuple already exists
-        string_vec = ', '.join(['%s' for e in all_cols])
+
         cols_str = ', '.join(all_cols)
-        # we need to avoid duplicate geometries
-        update_cols = [e for e in non_geo_cols if e != 'object_id']
-        unique_cols = [geom_dict[e] for e in geometry_cols] + ['object_id']
-        unique_cols_str = ', '.join(unique_cols)
-        update_cols_line = ', '.join(update_cols)
-        excluded_line = ', '.join([f'EXCLUDED.{e}' for e in update_cols])
-        
         query = f'''INSERT INTO {schema_name}.basin_attributes ({cols_str}) VALUES %s;'''
         extras.execute_values(cur, query, tuples)
         

@@ -23,7 +23,7 @@ def retrieve_raster(fpath):
 def filter_and_explode_geoms(gdf, min_area):
     gdf.geometry = gdf.apply(lambda row: make_valid(row.geometry) if not row.geometry.is_valid else row.geometry, axis=1)    
     gdf = gdf.explode()
-    gdf['area'] = gdf.geometry.area / 1E6
+    gdf['area'] = round(gdf.geometry.area / 1E6, 2)
     gdf = gdf[gdf['area'] >= min_area * 0.95]    
     return gdf
 
@@ -97,11 +97,11 @@ def match_ppt_to_polygons_by_order(ppt_batch_path, polygon_df, resolution):
 
     polygon_df['acc_polygon'] = (polygon_df.geometry.area / (resolution[0] * resolution[1])).astype(int)
     polygon_df['ppt_acc'] = ppt_batch['acc'].values
-    polygon_df['acc_diff'] = polygon_df['ppt_acc'] - polygon_df['acc_polygon']
-    polygon_df['FLAG_acc_match'] = polygon_df['acc_diff'].abs() > 2
+    polygon_df['acc_diff'] = (polygon_df['ppt_acc'] - polygon_df['acc_polygon']).astype(int)
+    polygon_df['FLAG_acc_match'] = (polygon_df['acc_diff'].abs() > 2).astype(int)
 
-    polygon_df['ppt_x'] = ppt_batch.geometry.x.values
-    polygon_df['ppt_y'] = ppt_batch.geometry.y.values
+    polygon_df['ppt_x'] = ppt_batch.geometry.x.values.round(2)
+    polygon_df['ppt_y'] = ppt_batch.geometry.y.values.round(2)
     polygon_df['cell_idx'] = ppt_batch['cell_idx'].values
 
     # polygon_df.reset_index(inplace=True, drop=True)
@@ -109,21 +109,6 @@ def match_ppt_to_polygons_by_order(ppt_batch_path, polygon_df, resolution):
     polygon_df.set_index('VALUE', inplace=True)
     polygon_df.sort_index(inplace=True)
     polygon_df.index.name = 'ID'
-    
-    # Do I save ppt and polygon pair as individual files?  
-    # is there better way to couple them for faster read/write?
-    # for i, polygon in polygon_df[:5].iterrows():
-
-    #     # check polygon validity
-    #     if not polygon.geometry.is_valid:
-    #         polygon.geometry = make_valid(polygon.geometry)
-
-    #     basin = polygon_df.iloc[[i]].copy()
-    #     ppt = ppt_batch.iloc[[i]].copy()
-
-    #     # to see that the ordering matches up, save ppt/basin geometry pairs
-    #     foo = gpd.GeoDataFrame(pd.concat([ppt, basin]), crs='EPSG:3005')
-    #     foo.to_file(os.path.join(temp_folder, f'{i}_temp_ppt_polygon_pair.geojson'))
 
     return polygon_df
 
@@ -159,16 +144,6 @@ def process_basin_elevation(clipped_raster):
     return mean_val, median_val, min_val, max_val
 
 
-def calculate_gravelius_and_perimeter(polygon):    
-    perimeter = polygon.geometry.length.values[0]
-    area = polygon.geometry.area.values[0]
-    if area == 0:
-        return np.nan, perimeter
-    else:
-        perimeter_equivalent_circle = np.sqrt(4 * np.pi * area)
-        gravelius = perimeter / perimeter_equivalent_circle
-    
-    return gravelius, perimeter / 1000
 
 
 def check_lulc_sum(data):
@@ -426,11 +401,7 @@ def process_basin_shape_attributes(inputs):
     existing_info = row.to_dict()
     basin_data.update(existing_info)        
     basin = gpd.GeoDataFrame(geometry=[row['geometry']], crs='EPSG:3005')
-    
-    gravelius, perimeter = calculate_gravelius_and_perimeter(basin)
-    basin_data['Perimeter'] = perimeter
-    basin_data['Gravelius'] = gravelius
-    basin_data['Drainage_Area_km2'] = basin.area.values[0] / 1E6
+    basin_data['Drainage_Area_km2'] = round(basin.area.values[0] / 1E6, 2)
 
     return basin_data
 
