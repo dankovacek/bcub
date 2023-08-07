@@ -195,10 +195,11 @@ Land cover rasters can be downloaded from the [North American Land
 Change Monitoring System
 (NALCMS)](http://www.cec.org/north-american-land-change-monitoring-system/).
 
-Download the files you want to work with from the link above, and keep
-note of the file path where the files are saved or save them to a new
-folder at `input_data/NALCMS/`. The files are large and may take a while
-to download. The files are not included in this repository.
+Download the files you want to work with (2010, 2015, and 2020 land
+cover rasters are available) from the link above, and keep note of the
+file path where the files are saved or save them to a new folder at
+`input_data/NALCMS/`. The files are large and may take a while to
+download. The files are not included in this repository.
 
 The soil permeability and porosity information is contained in the
 [GLobal HYdrogeology MaPS
@@ -217,9 +218,9 @@ folder.
 
 ### Basin delineation
 
-The data preparation work is done. Now we generate large sample of
-basins to characterize the decision space (of candidate monitoring
-locations).
+The data preparation work is nearly complete, now we generate a large
+sample of basins to characterize the decision space (of candidate
+monitoring locations).
 
 Generate a basin for each of the pour points:  
 &gt;`$ setup_scripts/python derive_basins.py`
@@ -228,9 +229,12 @@ This script will output a file in parquet format which is a compressed,
 columnar data format. To save in geojson format to read in QGIS, comment
 out the `to_parquet()` line and uncomment the next line
 `merged_basins.to_file(output_fpath.replace('.parquet', '.geojson'), driver='GeoJSON')`.
+Note that the file will be very large because of the polygon geometry.
+The parquet format is more efficient for reading and writing, but
+geojson can be viewed in QGIS.
 
-Extract Attributes
-------------------
+Basin Attribute Extraction
+--------------------------
 
 Two methods are provided to extract attributes from the basins. The
 first, `extract_attributes.py`, extracts attributes from the basins and
@@ -240,17 +244,27 @@ populates the database. The first method is more direct and easier to
 use, but the second method yields a format that is more performant for
 spatial querying.
 
+### Direct Extraction
+
+The `extract_attributes_direct.py` script will extract attributes from
+the basin polygon sets and save them to a `geojson` file. The attributes
+are extracted from the DEM, land cover, and soil data layers. Since the
+pour points are unique, the pour point geometry column is used to index
+rows between the basin geometry (polygon) files and the attribute files.
+This makes interacting with the data more performant since we drop the
+polygon geometry column that’s responsible for most of the memory usage.
+
 ### Postgres & PostGIS
 
-The `populate_postgis.py` script assumes Postgres is installed, and a
+The `create_database.py` script assumes Postgres is installed, and a
 user (with password) and a database have been created.
 
-At the bottom of `populate_postgis.py`, there are four variables that
-are required to connec to the database. `db_host`, `db_name`, `db_user`,
-and `db_password`. Update these variables to match your database
-configuration.
+Towards the bottom of `create_database.py`, there are four variables
+that are required to establish a database connection. `db_host`,
+`db_name`, `db_user`, and `db_password`. Update these variables to match
+your database configuration.
 
-For a detailed walkthrough on setting up Postgres and PostGIS, see [this
+For a details on setting up Postgres and PostGIS, see [this
 tutorial](https://www.digitalocean.com/community/tutorials/how-to-install-and-use-postgresql-on-ubuntu-22-04).
 
 > **Note**<br> `db_host` is typically localhost, but if you are
@@ -263,16 +277,29 @@ Log into the database as the superuser (postgres) and enable the PostGIS
 extension: &gt;`$ sudo -u postgres psql`
 &gt;`postgres=# CREATE EXTENSION postgis;`
 
-Restart the database service: &gt;`$ sudo systemctl restart postgresql`
+Restart the database service after any configuration change:
+&gt;`$ sudo systemctl restart postgresql`
 
 ### Set Up Postgres Database
 
 Create a database named `basins`:
 &gt;`$ sudo -u postgres createdb basins`
 
-Run the `populate_postgis.py` script to create the tables and populate
-the database. The schema should be automatically created from a parquet
-file, the `derive_basins.py` script was run first.
+Run the `create_database.py` script to create the tables and populate
+the database. The schema should be automatically created from the
+parquet file created from executing the `derive_basins.py` script. The
+`create_database` script will create the attributes table in the
+`basins` database you created and populate it with geometry and basic
+metadata.
+
+### Extend the Database
+
+The `extend_postgis_database.py` script will add the remaining
+attributes. The `extend_postgis_database.py` script will take a while to
+run, so it is recommended to run it in a `tmux` or `screen` session.
+With PostGIS we can create raster tables which can be then used in
+conjunction with the polygons to derive the same set of attributes as
+generated in using the direct attribute extraction method.
 
 Additional Notes
 ----------------
