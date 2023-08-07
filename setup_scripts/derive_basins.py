@@ -158,14 +158,13 @@ def check_for_ppt_batches(batch_folder):
     return len(existing_batches) > 0
 
 
-def create_ppt_file_batches(df, filesize, temp_ppt_filepath):    
+def create_batches(df, filesize, temp_ppt_filepath):    
 
     # divide the dataframe into chunks for batch processing
     # save the pour point dataframe to temporary filRes
     # and limit temporary raster files to ?GB / batch
-    # batch_limit = 3E6
-    batch_limit = 5E5
-    # batch_limit = 5E5
+    
+    batch_limit = 1E5
     n_batches = int(filesize * len(df) / batch_limit) + 1
     print(f'        ...running {n_batches} batch(es) on {filesize:.1f}MB raster.')
     
@@ -247,7 +246,7 @@ def raster_to_vector_basins_batch(input):
     return gdf
 
 
-def convert_to_parquet(merged_basins, output_fpath):
+def convert_to_parquet(merged_basins, output_fpath, attributes_fpath):
     # we want to end up with multiple geometries:
     # i) pour point, 2) basin polygon, 3) basin centroid
     # these column names must match the names mapped to geometry
@@ -256,6 +255,8 @@ def convert_to_parquet(merged_basins, output_fpath):
     merged_basins['centroid_geometry'] = merged_basins['geometry'].centroid
     merged_basins['geometry'] = [Point(x, y) for x, y in zip(merged_basins['ppt_x'], merged_basins['ppt_y'])]
     # convert to parquet format
+    # keep the index as this will be used to 
+    # reference polygons and attributes later
     merged_basins.to_parquet(output_fpath, index=True)
     
 
@@ -319,8 +320,9 @@ def main():
         output_folder = os.path.join(DATA_DIR, f'derived_basins/{region}/')
         
         output_fpath = os.path.join(output_folder, f'{region}_basins.parquet')
-        if os.path.exists(output_fpath):
-            continue
+        attributes_fpath = os.path.join(output_folder, f'{region}_basin_attributes.geojson')
+        # if os.path.exists(output_fpath):
+        #     continue
         
         # check if the ppt batches have already been created
         batch_folder = os.path.join(temp_folder, 'ppt_batches/')
@@ -346,7 +348,7 @@ def main():
                 subset=['cell_idx'], 
                 keep='first', inplace=True, ignore_index=True
                 )
-            batch_ppt_paths = create_ppt_file_batches(ppt_gdf, filesize, temp_ppt_filepath)
+            batch_ppt_paths = create_batches(ppt_gdf, filesize, temp_ppt_filepath)
         else:
             print(f'    Retrieving existing batch paths.')
             batch_ppt_files = list(sorted([f for f in os.listdir(batch_folder) if f.endswith('.shp')]))
@@ -375,42 +377,40 @@ def main():
             print(f'    Allocating {n_procs:.0f} processes for a batch size of {batch_size_GB:.1f}GB')
             
             # process the raster batches in parallel
-            path_inputs = ((br, f'EPSG:{region_raster_crs}', raster_resolution, min_basin_area, temp_folder) for br in batch_rasters)
-            
+            path_inputs = [(br, f'EPSG:{region_raster_crs}', raster_resolution, min_basin_area, temp_folder) for br in batch_rasters]
+                        
             # use fewer processes here because step is already parallelized?
             p = mp.Pool(n_procs)
             trv0 = time.time()
-            # if len(all_polygon_paths) < 2:
             all_polygons = p.map(raster_to_vector_basins_batch, path_inputs)
             # concatenate polygons
-            batch_polygons = gpd.GeoDataFrame(pd.concat(all_polygons), crs=region_raster_crs)
+            batch_gdf = gpd.GeoDataFrame(pd.concat(all_polygons), crs=region_raster_crs)
             p.close()
             
             trv1 = time.time()
             print(f'    {trv1-trv0:.2f}s to convert {len(batch_rasters)} rasters to vector basins.')            
             
             # sort by VALUE to maintain ordering from ppt batching / raster basin unnesting operation
-            batch_polygons.sort_values(by='VALUE', inplace=True)
-            batch_polygons.reset_index(inplace=True, drop=True)
+            batch_gdf.sort_values(by='VALUE', inplace=True)
+            batch_gdf.reset_index(inplace=True, drop=True)
             
             # if ordering is correct, we don't have to do this step
             # we can instead just iterate over polygons, derive attributes,
             # assign values to ppt dataframe.
             # add the pour point location info to each polygon
-            batch_polygons = bpf.match_ppt_to_polygons_by_order(ppt_batch_path, batch_polygons, raster_resolution)
-            batch_polygons.to_file(batch_output_fpath)
+            batch_gdf = bpf.match_ppt_to_polygons_by_order(ppt_batch_path, batch_gdf, raster_resolution)
+
+            batch_gdf.to_file(batch_output_fpath)            
             batch_output_files.append(batch_output_fpath)
-                                              
+            
             # clean up the temporary files
             clean_up_temp_files(temp_folder, batch_rasters)
         
         
         merged_basins = bpf.merge_geojson_files(batch_output_files, output_fpath, output_polygon_folder)
-        # output the file in parquet format
         
-        convert_to_parquet(merged_basins, output_fpath)
-        
-        # merged_basins.to_file(output_fpath.replace('.parquet', '.geojson'), driver='GeoJSON')
+        # save the results to a parquet file containing geometry
+        convert_to_parquet(merged_basins, output_fpath, attributes_fpath)
         
         t_n = time.time()
         n_processed_basins = max(1, n_processed_basins)
@@ -422,7 +422,6 @@ def main():
         for f in os.listdir(batch_folder):
             os.remove(os.path.join(batch_folder, f))
         os.rmdir(batch_folder)
-        os.rmdir(temp_folder)
         print('')
         print('      ------------------------------------')
         print('')

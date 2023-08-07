@@ -38,39 +38,29 @@ def dump_poly(inputs):
     Returns:
         string: list of filepaths for the clipped rasters.
     """
-    raster_fpath, vector_fname, temp_folder, raster_crs = inputs
-    
-    polygons = gpd.read_file(vector_fname)
-    polygon_crs = polygons.crs.to_epsg()
-    output_fnames = []
-    for i, _ in polygons.iterrows():
+    region, layer, i, row, crs, raster_fpath, temp_folder = inputs
+            
+    bdf = gpd.GeoDataFrame(geometry=[row['basin_geometry']], crs=crs)
 
-        bdf = polygons.iloc[[i]]
-        id = int(bdf['VALUE'].values[0])
-        basin_fname = f'basin_temp_{id:05d}.geojson'
-        basin_fpath = os.path.join(temp_folder, basin_fname)        
-        
-        if (not os.path.exists(basin_fpath)) | (raster_crs != polygon_crs):
-            bdf = bdf.to_crs(raster_crs)
-            bdf.geometry = bdf.apply(lambda row: make_valid(row.geometry) if not row.geometry.is_valid else row.geometry, axis=1)    
-            bdf.to_file(basin_fpath)
-             
-        # New filename. Assumes input raster file has '.tif' extension
-        # Might need to change how you build the output filename 
-        raster_fname = raster_fpath.split('/')[-1]
-        raster_fname = raster_fname.replace(".tif", f"_{int(id):05}.tif")
-        fpath_out = os.path.join(temp_folder, raster_fname)
-        
-        if not os.path.exists(fpath_out):
-            # Do the actual clipping
-            command = f'gdalwarp -s_srs {raster_crs} -cutline {basin_fpath} -crop_to_cutline -multi -of gtiff {raster_fpath} {fpath_out} -wo NUM_THREADS=ALL_CPUS'
-            os.system(command)
-        # Return the filename
-        output_fnames.append(fpath_out)
+    basin_fname = f'basin_temp_{i:05d}.geojson'
+    basin_fpath = os.path.join(temp_folder, basin_fname)
+    raster_fname = f'{region}_basin_{layer}_temp_{int(i):05}.tif'
+    fpath_out = os.path.join(temp_folder, raster_fname)
+
+    if (not os.path.exists(basin_fpath)):
+        bdf.geometry = bdf.apply(lambda row: make_valid(row.geometry) if not row.geometry.is_valid else row.geometry, axis=1)    
+        bdf.to_file(basin_fpath, driver='GeoJSON')
+
+    # New filename. Assumes input raster file has '.tif' extension
+    # Might need to change how you build the output filename         
+    if not os.path.exists(fpath_out):
+        # Do the actual clipping
+        command = f'gdalwarp -s_srs {crs} -cutline {basin_fpath} -crop_to_cutline -multi -of gtiff {raster_fpath} {fpath_out} -wo NUM_THREADS=ALL_CPUS'
+        os.system(command)
 
     g = None
     
-    return output_fnames
+    return fpath_out
 
 
 def match_ppt_to_polygons_by_order(ppt_batch_path, polygon_df, resolution):
@@ -96,7 +86,7 @@ def match_ppt_to_polygons_by_order(ppt_batch_path, polygon_df, resolution):
         print('')
 
     polygon_df['acc_polygon'] = (polygon_df.geometry.area / (resolution[0] * resolution[1])).astype(int)
-    polygon_df['ppt_acc'] = ppt_batch['acc'].values
+    polygon_df['ppt_acc'] = ppt_batch['acc'].values.astype(int)
     polygon_df['acc_diff'] = (polygon_df['ppt_acc'] - polygon_df['acc_polygon']).astype(int)
     polygon_df['FLAG_acc_match'] = (polygon_df['acc_diff'].abs() > 2).astype(int)
 
@@ -116,8 +106,8 @@ def match_ppt_to_polygons_by_order(ppt_batch_path, polygon_df, resolution):
 def check_and_repair_geometries(in_feature):
 
     # avoid changing original geodf
-    in_feature = in_feature.copy(deep=True)    
-        
+    in_feature = in_feature.copy(deep=True)
+
     # drop any missing geometries
     in_feature = in_feature[~(in_feature.is_empty)]
     
@@ -144,13 +134,11 @@ def process_basin_elevation(clipped_raster):
     return mean_val, median_val, min_val, max_val
 
 
-
-
-def check_lulc_sum(data):
-    checksum = sum(list(data.values())) 
+def check_lulc_sum(i, data):
+    checksum = round(sum(list(data.values())), 2)
     lulc_check = 1-checksum
     if abs(lulc_check) >= 0.05:
-        print(f'    ...lulc failed checksum: {checksum:.3f}')   
+        print(f'    ...checksum flag on {i}: {checksum:.3f}')   
     return lulc_check
 
 
@@ -175,25 +163,42 @@ def get_value_proportions(data):
     all_vals = data.data.flatten()
     vals = all_vals[~np.isnan(all_vals)]
     n_pts = len(vals)
-    unique, counts = np.unique(vals, return_counts=True, size=256, fill_value=-9999)
+    unique, counts = np.unique(vals, return_counts=True)
     # create a dictionary of land cover values by coverage proportion
     # assuming raster pixels are equally sized, we can keep the
     # raster in geographic coordinates and just count pixel ratios
-    prop_dict = {int(k): 1.0*v/n_pts for k, v in zip(list(unique), list(counts)) if k != -9999}
+    prop_dict = {int(k): round(1.0*v/n_pts, 4) for k, v in zip(list(unique), list(counts)) if k != -9999}
+    
     prop_dict = recategorize_lulc(prop_dict)
     return prop_dict
 
 
-def process_lulc(raster_path):
-    # basin_proj = basin.copy().to_crs(nalcms_crs)
-    i = int(raster_path.split('_')[-1].split('.')[0])
-    clipped_raster, _, _ = retrieve_raster(raster_path)
-    # raster_loaded, lu_raster_clipped = clip_raster_to_basin(basin_proj, nalcms)
+def process_lulc(inputs):
+    row, nalcms_path, nalcms_crs, temp_folder = inputs
+    
+    geom_id = row['ID']
+        
+    temp_polygon = gpd.GeoDataFrame(geometry=[row['basin_geometry']], crs=nalcms_crs) 
+    temp_raster = os.path.join(temp_folder, f'temp_nalcms_{geom_id:05d}.tif')
+    # .geojson format gives the gdalwarp function issues
+    # maybe because of the crs?  using .shp works correctly.
+    temp_polygon_fpath = os.path.join(temp_folder, f'temp_polygon_{geom_id:05d}.shp')
+    if not os.path.exists(temp_polygon_fpath):
+            temp_polygon.to_file(temp_polygon_fpath)
+
+    if not os.path.exists(temp_raster): 
+        command = f"gdalwarp -s_srs '{nalcms_crs.to_wkt()}' -cutline {temp_polygon_fpath} -crop_to_cutline -multi -of gtiff {nalcms_path} {temp_raster} -wo NUM_THREADS=ALL_CPUS"
+        os.system(command)
+        
+    clipped_raster, _, _ = retrieve_raster(temp_raster)
+    
     # checksum verifies proportions sum to 1
     prop_dict = get_value_proportions(clipped_raster)
-    lulc_check = check_lulc_sum(prop_dict)
+    lulc_check = check_lulc_sum(geom_id, prop_dict)
     prop_dict['lulc_check'] = lulc_check
-    prop_dict['ID'] = i
+    prop_dict['ID'] = row['ID']
+    # os.remove(temp_raster)
+    # os.remove(temp_polygon_fpath)
     return prop_dict
 
 
@@ -232,18 +237,20 @@ def get_soil_properties(merged, col):
 
 def process_glhymps(inputs):
     
-    i, row, glhymps_fpath = inputs
+    row, crs, glhymps_fpath = inputs
+    
+    basin = gpd.GeoDataFrame(geometry=[row['basin_geometry']], crs=crs)
+    
+    basin.rename(columns={'basin_geometry': 'geometry'}, inplace=True)
         
     soil_data = {}
-    soil_data['ID'] = i        
-    basin = gpd.GeoDataFrame(geometry=[row['geometry']], crs='EPSG:3005')
-    # ensure basin is projected to same CRS as GLHYMPS (4326)
-    basin_proj = basin.to_crs(4326)
+    soil_data['ID'] = row['ID']
 
     # returns INTERSECTION
-    gdf = gpd.read_file(glhymps_fpath, mask=basin_proj)
+    gdf = gpd.read_file(glhymps_fpath, mask=basin)
+    
     # now clip to the basin polygon bounds
-    clipped_soil = gpd.clip(gdf, mask=basin_proj)
+    clipped_soil = gpd.clip(gdf, mask=basin)
     
     # now reproject to reduce spatial distortion for calculating areas
     clipped_soil = clipped_soil.to_crs(3005)
@@ -257,38 +264,12 @@ def process_glhymps(inputs):
     return soil_data
 
 
-def warp_raster(stn, new_proj, c, temp_dem_folder, temp_raster_path_in):
-        
-    if c != 'LAEA':
-        t_srs = f'EPSG:{c}'
-        proj_code = c
-    else:
-        t_srs = f"'{new_proj}'" 
-        proj_code = 'LAEA'
-    
-    temp_raster_path_out = os.path.join(temp_dem_folder, f'{stn}_temp_{proj_code}.tif')
-
-    warp_command = f'gdalwarp -q -s_srs EPSG:4326 -t_srs {t_srs} -of gtiff {temp_raster_path_in} {temp_raster_path_out} -wo NUM_THREADS=ALL_CPUS'    
-
-    try:
-        # print(warp_command)
-        os.system(warp_command)            
-        return True, temp_raster_path_out
-    except Exception as ex:
-        print('')
-        print(f'Raster reprojection failed for {stn}.')
-        print('')
-        print(ex)
-        print('')
-        return False, None
-
-
-def mat_mult(ddx, ddy):
-    pdx = np.power(ddx, 2.0)
-    pdy = np.power(ddy, 2.0)
-    sum_dd = np.add(pdx, pdy)
-    S = np.sqrt(sum_dd)
-    return (180/np.pi)*np.arctan(np.nanmean(S))
+# def matrix_mult(ddx, ddy):
+#     pdx = np.power(ddx, 2.0)
+#     pdy = np.power(ddy, 2.0)
+#     sum_dd = np.add(pdx, pdy)
+#     S = np.sqrt(sum_dd)
+#     return (180/np.pi)*np.arctan(np.nanmean(S))
 
 
 # calculate circular mean aspect
@@ -309,14 +290,19 @@ def calculate_circular_mean_aspect(ddx, ddy):
         return aspect_degrees + 180
 
 
-def process_basin_terrain_attributes(raster_path):
-    i = int(raster_path.split('_')[-1].split('.')[0])
+def process_terrain_attributes(raster_path):
+    
+    basin_id = int(raster_path.split('_')[-1].split('.')[0])
+
     raster, _, _ = retrieve_raster(raster_path)
     basin_data = {}
-    basin_data['ID'] = i
-        
+    basin_data['ID'] = basin_id
+
     _, median_el, _, _ = process_basin_elevation(raster)
     basin_data['Elevation_m'] = round(median_el, 1)
+    
+    basin_data['Aspect_deg'] = int(wbt_aspect(raster_path))
+    basin_data['Slope_deg'] = round(wbt_slope(raster_path), 1)
 
     return basin_data
 
@@ -334,6 +320,14 @@ def circular_mean_angle(A):
 
 
 def wbt_aspect(raster_path):
+    """Calculate the overall orientation of the basin.
+
+    Args:
+        raster_path (string): Raster cropped to the drainage basin.
+
+    Returns:
+    float: circular mean angle of all pixel slope direction.
+    """
     out_path = raster_path.replace('.tif', '_aspect.tif')
     wbt.aspect(
         raster_path, 
@@ -390,21 +384,6 @@ def calc_slope_aspect(raster_path):
     basin_data['Val_Aspect_deg'] = round(wb_aspect, 1)
 
     return basin_data
-
-
-def process_basin_shape_attributes(inputs):
-    i, row = inputs
-        
-    basin_data = {}
-    basin_data['ID'] = i
-    
-    existing_info = row.to_dict()
-    basin_data.update(existing_info)        
-    basin = gpd.GeoDataFrame(geometry=[row['geometry']], crs='EPSG:3005')
-    basin_data['Drainage_Area_km2'] = round(basin.area.values[0] / 1E6, 2)
-
-    return basin_data
-
 
 
 # concatenate all batches into a single geojson file

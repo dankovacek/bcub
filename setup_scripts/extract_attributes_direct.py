@@ -31,10 +31,9 @@ DEM_folder = os.path.join(BASE_DIR, 'input_data/processed_dem/')
 region_files = os.listdir(DEM_folder)
 region_codes = sorted(list(set([e.split('_')[0] for e in region_files])))
 
-#########################
-# update these file paths
-#########################
-common_data = '/home/danbot2/code_5820/large_sample_hydrology/common_data'
+##################################################
+# update file paths to geospatial data sources
+##################################################
 nalcms_dir = os.path.join(BASE_DIR, 'input_data/NALCMS/')
 glhymps_dir = os.path.join(BASE_DIR, 'input_data/GLHYMPS/')
 nalcms_fpath = os.path.join(nalcms_dir, 'NA_NALCMS_2010_v2_land_cover_30m.tif')
@@ -42,9 +41,8 @@ glhymps_fpath = os.path.join(glhymps_dir, 'GLHYMPS_clipped_4326.gpkg')
 
 # we need to reproject the NALCMS raster
 # and clip it to the region bounds
-reproj_nalcms_path = os.path.join(BASE_DIR, 'input_data/NALCMS/NA_NALCMS_landcover_2010_3005_clipped.tif')
+reproj_nalcms_path = os.path.join(BASE_DIR, 'input_data/NALCMS/NA_NALCMS_2010_v2_land_cover_30m.tif')
 mask_path = os.path.join(BASE_DIR, 'input_data/region_polygons/region_bounds.geojson')
-
 
 
 if not os.path.exists(reproj_nalcms_path):
@@ -318,6 +316,18 @@ def raster_to_vector_basins_batch(input):
     return gdf
 
 
+def create_batches(basin_data, region):
+    filename = f'{region}_USGS_3DEP_3005.tif'
+    fpath = os.path.join(DEM_folder, filename)
+    # convert the file size from bytes to MB by shifting 20 positions
+    filesize = (os.path.getsize(fpath) >> 20 )
+    
+    batch_limit = 20
+    n_batches = int(np.ceil(filesize / batch_limit))
+    
+    return np.array_split(basin_data['ID'].values, indices_or_sections=n_batches)
+    
+    
 region_codes = [
     '08P', 
     # '08O',
@@ -337,104 +347,131 @@ region_codes = [
 idx_dict = {}
 tracker_dict = {}
 def main():    
-    out_crs = 3005
-    min_basin_area = 1.0 # km^2
-    rn = 0
-    n_processed_basins = 0
+    # out_crs = 3005
+    # min_basin_area = 1.0 # km^2
+    t_batch_start = time.time()
     for region in region_codes:
-        pass
-        # # create raster subsets for extracting raster terrain features
-        # rfname = f'{region}_USGS_3DEP_3005.tif'
-        # regional_raster_fpath = os.path.join(DEM_folder, rfname)
-        # ct0 = time.time()
+        temp_folder = os.path.join(BASE_DIR, f'processed_data/derived_basins/{region}/temp/')
+        region_raster, region_raster_crs, _ = retrieve_raster(region)
         
-        # temp_polygon_files = [f'temp_polygons_{int(n):05}.shp' for n in range(1, len(batch_rasters) + 1)]
-        # output_polygon_paths = [os.path.join(temp_folder, f) for f in temp_polygon_files]         
-                    
-        # p = mp.Pool()
-        # clipping_inputs = [(regional_raster_fpath, opp, temp_folder, region_raster_crs) for opp in output_polygon_paths]
-        # clipped_raster_feature_sets = p.map(bpf.dump_poly, clipping_inputs)
-        # ct1 = time.time()
-        # print(f'    {(ct1-ct0)/60:.1f}min to create {n_polygons} clipped rasters.')
-        # p.close()
+        raster_filename = f'{region}_USGS_3DEP_3005.tif'
+        raster_fpath = os.path.join(DEM_folder, raster_filename)
+        temp_folder = os.path.join(DATA_DIR, f'derived_basins/{region}/temp/')        
+        if not os.path.exists(os.path.join(temp_folder)):
+            os.mkdir(os.path.join(temp_folder))
+    
+        batch_output_folder = os.path.join(DATA_DIR, f'basin_attributes/')
+        if not os.path.exists(batch_output_folder):
+            os.mkdir(batch_output_folder)
             
-        # extract basin terrain attributes
-        # p = mp.Pool()
-        # tr0 = time.time()
-        # clipped_raster_fnames = [item for sublist in clipped_raster_feature_sets for item in sublist]
-        # terrain_data = p.map(bpf.process_basin_terrain_attributes, clipped_raster_fnames)
-        # terrain_df = pd.DataFrame.from_dict(terrain_data)
-        # terrain_df.set_index('ID', inplace=True)
-        # terrain_df.sort_index(inplace=True)
-        # tr1 = time.time()
-        # print(f'    {(tr1-tr0)/60:.1f}min to process terrain attributes from {n_polygons} clipped rasters.')
-        # p.close()
-        # tr0 = time.time()
+        output_fpath = os.path.join(batch_output_folder, f'{region}_basin_attributes.geojson')
+        output_batch_paths = []
+        skip_save = False
+        if os.path.exists(output_fpath):
+            skip_save = True
+            continue
         
-        # p = mp.Pool()
-        # as_data = p.map(bpf.calc_slope_aspect, clipped_raster_fnames)
-        # as_df = pd.DataFrame.from_dict(as_data)
-        # as_df.set_index('ID', inplace=True)
-        # as_df.sort_index(inplace=True)
-        # tr1 = time.time()
-        # p.close()
-        # print(f'    {(tr1-tr0)/60:.1f}min to process mean aspect and slope attributes from {n_polygons} clipped rasters.')
+        basin_data = gpd.read_parquet(os.path.join(DATA_DIR, f'derived_basins/{region}/{region}_basins.parquet'))
+        batches = create_batches(basin_data, region)
+        batch_no = 0
         
-        # process lulc (NALCMS))
-        # ct0 = time.time()
-        # nalcms_clip_inputs = ((reproj_nalcms_path, opp, temp_folder, nalcms_crs) for opp in output_polygon_paths)
-        # p = mp.Pool()
-        # clipped_lulc_sets = p.map(bpf.dump_poly, nalcms_clip_inputs)
-        # lulc_fnames = (item for sublist in clipped_lulc_sets for item in sublist)
-        # lulc_inputs = [f for f in lulc_fnames if not os.path.exists(f.replace('.tif', '.shp'))]
-        # p.close()
-        # p = mp.Pool()
-        # lulc_data = p.map(bpf.process_lulc, lulc_inputs)
-        # lulc_df = pd.DataFrame.from_dict(lulc_data)
-        # lulc_df.set_index('ID', inplace=True)
-                    
-        # ct1 = time.time()
-        # p.close()
-        # print(f'    {(ct1-ct0)/60:.2f}min to create {n_polygons} clipped NALCMS rasters.')
+        for batch_idxs in batches:
+            
+            basins = basin_data[basin_data['ID'].isin(batch_idxs)].copy()
+            batch_output_fpath = os.path.join(batch_output_folder, f'{region}_attributes_batch_{batch_no:04}.geojson')
+            
+            ct0 = time.time()
+            
+            # open the parquet file containing basin geometry
+            # all geometries should be in EPSG 3005 CRS
+            basin_polygons = basins.set_geometry('basin_geometry')[['ID', 'basin_geometry']].copy()
+            basin_polygons = basin_polygons.to_crs(region_raster_crs)
 
-        # bp_inputs = [(i, row, glhymps_fpath) for i, row in batch_polygons.iterrows()]
-        # n_processed_basins += n_polygons
-        
-        # # extract basin polygon geometry attributes 
-        # ts = time.time()
-        # p = mp.Pool()
-        # shape_results = p.map(bpf.process_basin_shape_attributes, bp_inputs)
-        # shape_df = pd.DataFrame.from_dict(shape_results)
-        # shape_df.set_index('ID', inplace=True)
-        # shape_df.sort_index(inplace=True)
-        # ts1 = time.time()
-        # print(f'    {(ts1-ts):.1f}s to process shape attributes for {len(shape_df)} basins.')
-        # p.close()
-        # # process soil properties (GLHYMPS)
-        # ct0 = time.time()
-        # p = mp.Pool()
-        # glhymps_data = p.map(bpf.process_glhymps, bp_inputs)
-        # glhymps_df = pd.DataFrame.from_dict(glhymps_data)
-        # glhymps_df.set_index('ID', inplace=True)
-        # p.close()
-        # del batch_polygons, bp_inputs
-        
-        # ct1 = time.time()
-        # print(f'    {ct1-ct0:.2f}s to process GLHYMPS attributes.')
-        
-        # # combine all the attribute results
-        # all_data = pd.concat([shape_df, terrain_df, as_df, lulc_df, glhymps_df], join='inner', axis=1)
-        # comb_df = gpd.GeoDataFrame(all_data, crs=region_raster_crs)
-        # comb_df.drop(labels=['FID'], inplace=True, axis=1)
-        # del shape_df, terrain_df, as_df, lulc_df, glhymps_df
-        
-        # t_end = time.time()
-        # unit_time = (t_end - t_batch_start) / n_polygons
-        # comb_df.to_file(batch_output_fpath)
-        # del comb_df
-        # print(f'    ...batch processed in {(t_end-t_batch_start)/60:.1f} min ({unit_time:.2f})s/basin...{region}\n')
-                    
+            polygon_inputs = [(region, 'dem', i, row, region_raster_crs, raster_fpath, temp_folder) for i, row in basin_polygons.iterrows()]
+            p = mp.Pool()
+            temp_raster_paths = p.map(bpf.dump_poly, polygon_inputs)
+            ct1 = time.time()
+            print(f'    {(ct1-ct0)/60:.1f}min to create {len(polygon_inputs)} clipped rasters.')
+            p.close()
+                                
+            # extract basin terrain attributes
+            p = mp.Pool()
+            tr0 = time.time()
+            terrain_data = p.map(bpf.process_terrain_attributes, temp_raster_paths)
+            terrain_df = pd.DataFrame.from_dict(terrain_data)
+            terrain_df.set_index('ID', inplace=True)
+            terrain_df.sort_index(inplace=True)
+            tr1 = time.time()
+            print(f'    {(tr1-tr0)/60:.1f}min to process terrain attributes from {len(temp_raster_paths)} clipped rasters.')
+            p.close()        
             
+            # process lulc (NALCMS))
+            ct0 = time.time()
+            basin_polygons = basin_polygons.to_crs(nalcms_crs)
+            print(basin_polygons.columns)
+            print(basin_polygons.crs)
+            nalcms_clip_inputs = [(row, reproj_nalcms_path, nalcms_crs, temp_folder) for i, row in basin_polygons.iterrows()]
+            p = mp.Pool()
+            lulc_data = p.map(bpf.process_lulc, nalcms_clip_inputs)
+            lulc_df = pd.DataFrame.from_dict(lulc_data)
+            lulc_df.set_index('ID', inplace=True)
+            ct1 = time.time()
+            p.close()
+            print(f'    {(ct1-ct0)/60:.2f}min to create {len(lulc_df)} clipped NALCMS rasters.')
+
+            # process soil properties (GLHYMPS)
+            # glhymps is in 4326, so we need to reproject the basin polygons
+            basin_polygons = basin_polygons.to_crs(4326)
+            bp_inputs = [(row, 4326, glhymps_fpath) for i, row in basin_polygons.iterrows()]
+            ct0 = time.time()
+            p = mp.Pool()
+            glhymps_data = p.map(bpf.process_glhymps, bp_inputs)
+            glhymps_df = pd.DataFrame.from_dict(glhymps_data)
+            glhymps_df.set_index('ID', inplace=True)
+            p.close()
+            
+            ct1 = time.time()
+            print(f'    {ct1-ct0:.2f}s to process GLHYMPS attributes.')
+            
+            # combine all the attribute results
+            # we have to drop the geometry columns except for the pour point.
+            # we want to keep the centroid geometry in the final output 
+            # so split the centroid coordinates into x and y components
+            out_data = basin_data.copy()
+            out_data['centroid_x'] = basin_data['centroid_geometry'].x
+            out_data['centroid_y'] = basin_data['centroid_geometry'].y
+            out_data.drop(labels=['basin_geometry', 'centroid_geometry'], axis=1, inplace=True)
+            out_data.set_index('ID', inplace=True)
+            
+            all_data = pd.concat([out_data, terrain_df, lulc_df, glhymps_df], join='inner', axis=1)
+            all_data.drop(labels=['FID'], inplace=True, axis=1)        
+            comb_df = gpd.GeoDataFrame(all_data, geometry='geometry', crs=3005)
+            t_end = time.time()
+            unit_time = (t_end - t_batch_start) / len(all_data)
+            
+            # save the results
+            comb_df.to_file(batch_output_fpath)
+            output_batch_paths.append(batch_output_fpath)
+            del terrain_df, lulc_df, glhymps_df
+            del comb_df
+            print(f'    ...batch processed in {(t_end-t_batch_start)/60:.1f} min ({unit_time:.2f})s/basin...{region}\n')
+    
+    # merge batch outputs
+    
+    if not skip_save:
+        results = []
+        for fpath in output_batch_paths:
+            results.append(gpd.read_file(fpath))
+        results = pd.concat(results, axis=0)
+        results_gdf = gpd.GeoDataFrame(results, geometry='geometry', crs=3005)
+        results_gdf.to_file(output_fpath, driver='GeoJSON')
+        for fpath in output_batch_paths:
+            if os.path.exists(fpath):
+                os.remove(fpath)
+    else:
+        foo = gpd.read_file(output_fpath)
+        print(foo.head())
+        print(foo.columns)
 
 if __name__ == '__main__':
     t0 = time.time()
