@@ -254,10 +254,19 @@ rows between the basin geometry (polygon) files and the attribute files.
 This makes interacting with the data more performant since we drop the
 polygon geometry column that’s responsible for most of the memory usage.
 
-### Postgres & PostGIS
+Postgres & PostGIS
+------------------
+
+### Steps to recreate:
+
+1.  create database
+2.  create schema
+3.  create table
+4.  populate table
 
 The `create_database.py` script assumes Postgres is installed, and a
-user (with password) and a database have been created.
+user (with password) and a database have been created. See additional
+notes below for a few useful commands.
 
 Towards the bottom of `create_database.py`, there are four variables
 that are required to establish a database connection. `db_host`,
@@ -271,19 +280,24 @@ tutorial](https://www.digitalocean.com/community/tutorials/how-to-install-and-us
 > connecting to a remote database, you will need to update this
 > variable.
 
+### Create a Database
+
+Create a database named `basins`:
+&gt;`$ sudo -u postgres createdb basins`
+
 #### Enable PostGIS
 
 Log into the database as the superuser (postgres) and enable the PostGIS
 extension: &gt;`$ sudo -u postgres psql`
-&gt;`postgres=# CREATE EXTENSION postgis;`
+
+Switch to the ‘basins’ database &gt;`postgres=# \c basins`
+
+Enable the PostGIS extension: &gt;`postgres=# CREATE EXTENSION postgis;`
 
 Restart the database service after any configuration change:
 &gt;`$ sudo systemctl restart postgresql`
 
-### Set Up Postgres Database
-
-Create a database named `basins`:
-&gt;`$ sudo -u postgres createdb basins`
+### Create database tables for basin geometry
 
 Run the `create_database.py` script to create the tables and populate
 the database. The schema should be automatically created from the
@@ -303,6 +317,48 @@ generated in using the direct attribute extraction method.
 
 Additional Notes
 ----------------
+
+### List columns in a database table
+
+Once the `create_database` script has been executed successfully:
+&gt;`\d basins_schema.basin_attributes`
+
+Create raster table
+-------------------
+
+> raster2pgsql -s 3005 -f nalcms\_2010\_raster -I -C -M
+> Clipped\_NALCMS\_2010\_land\_cover\_30m\_3005.tif -t 97x175
+> basins\_schema.nalcms\_2010 | psql -d basins
+
+Repeat for other geospatial layers.
+
+### PostgreSQL basics
+
+[Instructions from
+DigitalOcean](https://www.digitalocean.com/community/tutorials/how-to-install-postgresql-on-ubuntu-22-04-quickstart).
+
+Switch to postgres role: `sudo -i -u postgres`
+
+Access postgres prompt: `psql`
+
+Change databases: `\c <db_name>`
+
+Quit postgres prompt: `\q`
+
+Return to regular system: `exit`
+
+Change user: `sudo -i -u postgres`
+
+basins database info:
+
+`user: postgres` `pass: <your_password>`
+
+Create a new database
+
+`postgres@server:~$ createdb basins`
+
+Create the postgis extension (done from the psql terminal after
+connecting to “basins” db): &gt;`CREATE EXTENSION postgis;`
 
 <!-- Automate citation formatting for the README document.
 

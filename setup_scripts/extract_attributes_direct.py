@@ -274,11 +274,11 @@ def match_ppt_to_polygons_by_geometry(ppt_batch, polygon_df, resolution, region,
     return polygon_df
 
 
-def clean_up_temp_files(temp_folder, batch_rasters):    
+def clean_up_temp_files(temp_folder):    
     temp_files = [f for f in os.listdir(temp_folder) if 'temp' in f]
     nalcms_files = [e for e in os.listdir(temp_folder) if e.startswith('NA_NALCMS')]
     raster_clips = [e for e in os.listdir(temp_folder) if DEM_source in e]
-    all_files = batch_rasters + nalcms_files + raster_clips + temp_files
+    all_files = nalcms_files + raster_clips + temp_files
     for f in list(set(all_files)):
         os.remove(os.path.join(temp_folder, f))
 
@@ -455,6 +455,8 @@ def main():
             del terrain_df, lulc_df, glhymps_df
             del comb_df
             print(f'    ...batch processed in {(t_end-t_batch_start)/60:.1f} min ({unit_time:.2f})s/basin...{region}\n')
+            
+            clean_up_temp_files(temp_folder)
     
     # merge batch outputs
     
@@ -471,8 +473,7 @@ def main():
     else:
         foo = gpd.read_file(output_fpath)
         print(foo.head())
-        print(foo.columns)
-
+        
 if __name__ == '__main__':
     t0 = time.time()
     main()
