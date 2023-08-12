@@ -31,47 +31,6 @@ DEM_folder = os.path.join(BASE_DIR, 'input_data/processed_dem/')
 region_files = os.listdir(DEM_folder)
 region_codes = sorted(list(set([e.split('_')[0] for e in region_files])))
 
-#########################
-# update these file paths
-#########################
-common_data = '/home/danbot2/code_5820/large_sample_hydrology/common_data'
-nalcms_dir = os.path.join(BASE_DIR, 'input_data/NALCMS/')
-glhymps_dir = os.path.join(BASE_DIR, 'input_data/GLHYMPS/')
-nalcms_fpath = os.path.join(nalcms_dir, 'NA_NALCMS_2010_v2_land_cover_30m.tif')
-glhymps_fpath = os.path.join(glhymps_dir, 'GLHYMPS_clipped_4326.gpkg')
-
-# we need to reproject the NALCMS raster
-# and clip it to the region bounds
-reproj_nalcms_path = os.path.join(BASE_DIR, 'input_data/NALCMS/NA_NALCMS_landcover_2010_3005_clipped.tif')
-mask_path = os.path.join(BASE_DIR, 'input_data/region_polygons/region_bounds.geojson')
-
-
-if not os.path.exists(reproj_nalcms_path):
-    nalcms, nalcms_crs, nalcms_affine = bpf.retrieve_raster(nalcms_fpath)
-    raster_wkt = nalcms_crs.to_wkt()
-        
-    reproj_bounds = gpd.read_file(mask_path).to_crs(nalcms_crs)
-    reproj_bounds_path = os.path.join(BASE_DIR, 'input_data/region_polygons/region_bounds_reproj.shp')
-    reproj_bounds.to_file(reproj_bounds_path)
-    
-    # first clip the raster, then reproject to EPSG 3005
-    print('Clipping NALCMS raster to region bounds.')
-    clipped_nalcms_path = os.path.join(BASE_DIR, 'input_data/NALCMS/NA_NALCMS_landcover_2010_clipped.tif')
-    clip_command = f"gdalwarp -s_srs '{raster_wkt}' -cutline {reproj_bounds_path} -crop_to_cutline -multi -of gtiff {nalcms_fpath} {clipped_nalcms_path} -wo NUM_THREADS=ALL_CPUS"
-    os.system(clip_command)
-    
-    print('\nReprojecting clipped NALCMS raster.')
-    warp_command = f"gdalwarp -q -s_srs '{raster_wkt}' -t_srs EPSG:3005 -of gtiff {clipped_nalcms_path} {reproj_nalcms_path} -r bilinear -wo NUM_THREADS=ALL_CPUS"
-    os.system(warp_command) 
-    
-    # remove the intermediate step
-    if os.path.exists(clipped_nalcms_path):
-        os.remove(clipped_nalcms_path)
-        
-
-nalcms, nalcms_crs, nalcms_affine = bpf.retrieve_raster(reproj_nalcms_path)
-
-
 DATA_DIR = os.path.join(BASE_DIR, 'processed_data/')
 
 def retrieve_raster(region):
@@ -207,9 +166,8 @@ def batch_basin_delineation(fdir_path, ppt_batch_path, temp_raster_path):
 
 def clean_up_temp_files(temp_folder, batch_rasters):    
     temp_files = [f for f in os.listdir(temp_folder) if 'temp' in f]
-    nalcms_files = [e for e in os.listdir(temp_folder) if e.startswith('NA_NALCMS')]
     raster_clips = [e for e in os.listdir(temp_folder) if DEM_source in e]
-    all_files = batch_rasters + nalcms_files + raster_clips + temp_files
+    all_files = batch_rasters + raster_clips + temp_files
     for f in list(set(all_files)):
         os.remove(os.path.join(temp_folder, f))
 

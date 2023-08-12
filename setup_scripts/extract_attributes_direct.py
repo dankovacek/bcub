@@ -36,44 +36,39 @@ region_codes = sorted(list(set([e.split('_')[0] for e in region_files])))
 ##################################################
 nalcms_dir = os.path.join(BASE_DIR, 'input_data/NALCMS/')
 glhymps_dir = os.path.join(BASE_DIR, 'input_data/GLHYMPS/')
-nalcms_fpath = os.path.join(nalcms_dir, 'NA_NALCMS_2010_v2_land_cover_30m.tif')
-glhymps_fpath = os.path.join(glhymps_dir, 'GLHYMPS_clipped_4326.gpkg')
-
-# we need to reproject the NALCMS raster
-# and clip it to the region bounds
-reproj_nalcms_path = os.path.join(BASE_DIR, 'input_data/NALCMS/NA_NALCMS_2010_v2_land_cover_30m.tif')
-mask_path = os.path.join(BASE_DIR, 'input_data/region_polygons/region_bounds.geojson')
+nalcms_fpath = os.path.join(nalcms_dir, 'NA_NALCMS_landcover_2010_3005_clipped.tif')
+glhymps_fpath = os.path.join(glhymps_dir, 'GLHYMPS_clipped_3005.gpkg')
 
 
-if not os.path.exists(reproj_nalcms_path):
-    nalcms, nalcms_crs, nalcms_affine = bpf.retrieve_raster(nalcms_fpath)
-    raster_wkt = nalcms_crs.to_wkt()
+# if not os.path.exists(reproj_nalcms_path):
+#     nalcms, nalcms_crs, nalcms_affine = bpf.retrieve_raster(nalcms_fpath)
+#     raster_wkt = nalcms_crs.to_wkt()
         
-    reproj_bounds = gpd.read_file(mask_path).to_crs(nalcms_crs)
-    reproj_bounds_path = os.path.join(BASE_DIR, 'input_data/region_polygons/region_bounds_reproj.shp')
-    reproj_bounds.to_file(reproj_bounds_path)
+#     reproj_bounds = gpd.read_file(mask_path).to_crs(nalcms_crs)
+#     reproj_bounds_path = os.path.join(BASE_DIR, 'input_data/region_polygons/region_bounds_reproj.shp')
+#     reproj_bounds.to_file(reproj_bounds_path)
     
-    # first clip the raster, then reproject to EPSG 3005
-    print('Clipping NALCMS raster to region bounds.')
-    clipped_nalcms_path = os.path.join(BASE_DIR, 'input_data/NALCMS/NA_NALCMS_landcover_2010_clipped.tif')
-    clip_command = f"gdalwarp -s_srs '{raster_wkt}' -cutline {reproj_bounds_path} -crop_to_cutline -multi -of gtiff {nalcms_fpath} {clipped_nalcms_path} -wo NUM_THREADS=ALL_CPUS"
-    os.system(clip_command)
+#     # first clip the raster, then reproject to EPSG 3005
+#     print('Clipping NALCMS raster to region bounds.')
+#     clipped_nalcms_path = os.path.join(BASE_DIR, 'input_data/NALCMS/NA_NALCMS_landcover_2010_clipped.tif')
+#     clip_command = f"gdalwarp -s_srs '{raster_wkt}' -cutline {reproj_bounds_path} -crop_to_cutline -multi -of gtiff {nalcms_fpath} {clipped_nalcms_path} -wo NUM_THREADS=ALL_CPUS"
+#     os.system(clip_command)
     
-    print('\nReprojecting clipped NALCMS raster.')
-    warp_command = f"gdalwarp -q -s_srs '{raster_wkt}' -t_srs EPSG:3005 -of gtiff {clipped_nalcms_path} {reproj_nalcms_path} -r bilinear -wo NUM_THREADS=ALL_CPUS"
-    os.system(warp_command) 
+#     print('\nReprojecting clipped NALCMS raster.')
+#     warp_command = f"gdalwarp -q -s_srs '{raster_wkt}' -t_srs EPSG:3005 -of gtiff {clipped_nalcms_path} {reproj_nalcms_path} -r bilinear -wo NUM_THREADS=ALL_CPUS"
+#     os.system(warp_command) 
     
-    # remove the intermediate step
-    if os.path.exists(clipped_nalcms_path):
-        os.remove(clipped_nalcms_path)
+#     # remove the intermediate step
+#     if os.path.exists(clipped_nalcms_path):
+#         os.remove(clipped_nalcms_path)
         
 
-nalcms, nalcms_crs, nalcms_affine = bpf.retrieve_raster(reproj_nalcms_path)
+nalcms, nalcms_crs, nalcms_affine = bpf.retrieve_raster(nalcms_fpath)
 
 
 DATA_DIR = os.path.join(BASE_DIR, 'processed_data/')
 
-def retrieve_raster(region):
+def retrieve_dem_raster(region):
     filename = f'{region}_USGS_3DEP_3005.tif'
     fpath = os.path.join(DEM_folder, filename)
     raster = rxr.open_rasterio(fpath, mask_and_scale=True)
@@ -352,7 +347,7 @@ def main():
     t_batch_start = time.time()
     for region in region_codes:
         temp_folder = os.path.join(BASE_DIR, f'processed_data/derived_basins/{region}/temp/')
-        region_raster, region_raster_crs, _ = retrieve_raster(region)
+        region_raster, region_raster_crs, _ = retrieve_dem_raster(region)
         
         raster_filename = f'{region}_USGS_3DEP_3005.tif'
         raster_fpath = os.path.join(DEM_folder, raster_filename)
@@ -376,12 +371,10 @@ def main():
         batch_no = 0
         
         for batch_idxs in batches:
-            
             basins = basin_data[basin_data['ID'].isin(batch_idxs)].copy()
             batch_output_fpath = os.path.join(batch_output_folder, f'{region}_attributes_batch_{batch_no:04}.geojson')
             
             ct0 = time.time()
-            
             # open the parquet file containing basin geometry
             # all geometries should be in EPSG 3005 CRS
             basin_polygons = basins.set_geometry('basin_geometry')[['ID', 'basin_geometry']].copy()
@@ -408,9 +401,8 @@ def main():
             # process lulc (NALCMS))
             ct0 = time.time()
             basin_polygons = basin_polygons.to_crs(nalcms_crs)
-            print(basin_polygons.columns)
-            print(basin_polygons.crs)
-            nalcms_clip_inputs = [(row, reproj_nalcms_path, nalcms_crs, temp_folder) for i, row in basin_polygons.iterrows()]
+
+            nalcms_clip_inputs = [(row, nalcms_fpath, nalcms_crs, temp_folder) for i, row in basin_polygons.iterrows()]
             p = mp.Pool()
             lulc_data = p.map(bpf.process_lulc, nalcms_clip_inputs)
             lulc_df = pd.DataFrame.from_dict(lulc_data)

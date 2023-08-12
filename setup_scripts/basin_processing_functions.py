@@ -232,6 +232,7 @@ def get_soil_properties(merged, col):
         return gmean(np.abs(df[col]), weights=df['area_frac']) * -1
     else:
         # calculate area-weighted arithmetic mean
+        # for porosity
         return (df['area_frac'] * df[col]).sum()
     
 
