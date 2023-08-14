@@ -57,7 +57,9 @@ Activate the virual environment:
 &gt;`$ source env/bin/activate`
 
 Install Python packages:  
-&gt;`$ pip install -r requirements.txt` <!-- 
+&gt;`$ pip install -r requirements.txt`
+
+<!-- 
 ### High Performance Array Computing
 
 The basin delineation and attribute extraction steps take a lot of time. To speed up the process, namely for array computations on large basins, the Jax library is used to enable GPU computation. See [installation details](https://github.com/google/jax#pip-installation-gpu-cuda-installed-via-pip-easier) for more information. Alternatively, you can use the equivalent numpy functions where the Jax library is used.
