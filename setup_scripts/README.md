@@ -142,9 +142,8 @@ Generate pour points
 Using the stream raster, generate pour points at river confluences.
 Confluences are defined as stream cells with more than one inflow. An
 inflow is an adjacent stream cell whose flow direction points to the
-focal cell.
-
-> `$ python find_pour_points.py`
+focal cell.  
+&gt;`$ python find_pour_points.py`
 
 ### Hydrographic features dataset
 
@@ -159,14 +158,14 @@ First, download the hydrographic features dataset
 (\`rhn\_nhn\_hhyd.gpkg.zip\`\`) from the [National Hydrographic
 Network](https://open.canada.ca/data/en/dataset/a4b190fe-e090-4e6d-881e-b87956c07977).
 
-Create a folder for the NHN data (*from the root directory*):
+Create a folder for the NHN data (*from the root directory*):  
 &gt;`$ mkdir input_data/NHN_data` Specify the new directory as the
 destination for the download using wget (alternatively just visit the
-link and download the file manually):
+link and download the file manually):  
 &gt;`$ wget https://ftp.maps.canada.ca/pub/nrcan_rncan/vector/geobase_nhn_rhn/gpkg_en/CA/rhn_nhn_hhyd.gpkg.zip -P input_data/NHN_data`
-Unzip the file:
+Unzip the file:  
 &gt;`$ unzip -j -d input_data/NHN_data input_data/NHN_data/rhn_nhn_hhyd.gpkg.zip`
-Remove the zip file:
+Remove the zip file:  
 &gt;`$ rm input_data/NHN_data/rhn_nhn_hhyd.gpkg.zip`
 
 > **Warning**<br> **There is currently a bug preventing geopandas/fiona
@@ -181,7 +180,8 @@ Remove the zip file:
 Once the file is downloaded, the `lakes_filter` script will clip the NHN
 water bodies features to each sub-region polygon to reduce RAM usage.
 The water body polygons are then used to filter out (spurious)
-confluences in lakes. &gt;`$ python lakes_filter.py`
+confluences in lakes.  
+&gt;`$ python lakes_filter.py`
 
 Land cover and soil data layers
 -------------------------------
@@ -291,29 +291,34 @@ your database configuration.
 
 ### Create a Database
 
-Create a database, here we call it `basins`:
+Create a database, here we call it `basins`:  
 &gt;`$ sudo -u postgres createdb basins`
 
 #### Enable PostGIS
 
 Log into the database as the superuser (postgres) and enable the PostGIS
-extension: &gt;`$ sudo -u postgres psql`
+extension:  
+&gt;`$ sudo -u postgres psql`
 
-Switch to the ‘basins’ database &gt;`postgres=# \c basins`
+Switch to the ‘basins’ database  
+&gt;`postgres=# \c basins`
 
-Enable the PostGIS extension: &gt;`postgres=# CREATE EXTENSION postgis;`
+Enable the PostGIS extension:  
+&gt;`postgres=# CREATE EXTENSION postgis;`
 
 Allow password authentication for the postgres user. This is required
 for the `create_database.py` script to connect to the database. Edit the
 `pg_hba.conf` file (/etc/postgresql/15/main/pg\_hba.conf) and change the
 line (near the bottom of the file, note you may have version 14 instead
-of 15): """ \# Database administrative login by Unix domain socket local
-all postgres peer """ to
+of 15):
+
+""" \# Database administrative login by Unix domain socket local all
+postgres peer """ to
 
 """ \# Database administrative login by Unix domain socket local all
 postgres md5 """
 
-Restart the database service after any configuration change:
+Restart the database service after any configuration change:  
 &gt;`$ sudo systemctl restart postgresql`
 
 ### Create database tables for basin geometry
@@ -339,7 +344,7 @@ Additional Notes
 
 ### List columns in a database table
 
-Once the `create_database` script has been executed successfully:
+Once the `create_database` script has been executed successfully:  
 &gt;`\d basins_schema.basin_attributes`
 
 Create raster table
@@ -355,54 +360,58 @@ stackexchange](https://gis.stackexchange.com/questions/300887/optimum-raster-til
 post about optimal tile settings. The last argument is the schema and
 table name. The raster table will be created in the `basins` database.
 
-Switch users and connect to the database: &gt;`# sudo -i -u postgres`
-&gt;`# psql -d basins`
+Switch users and connect to the database:  
+&gt;`# sudo -i -u postgres` &gt;`# psql -d basins`
 
-Enable the postgis extension: &gt;`CREATE EXTENSION postgis;`
+Enable the postgis extension:  
+&gt;`# CREATE EXTENSION postgis;`
 
-Enable the raster extension: &gt;`CREATE EXTENSION postgis_raster;`
+Enable the raster extension:  
+&gt;`# CREATE EXTENSION postgis_raster;`
 
 Run the raster2psql function to create a raster table (this is done in
-`extend_postgis_dataset.py`).
-&gt;`raster2pgsql -s 3005 -e -I -C -Y 1000 -M -f nalcms_2010 -t auto /home/danbot/Documents/code/23/bcub/input_data/NALCMS/NA_NALCMS_landcover_2010_3005_clipped.tif basins_schema.nalcms_2010 | PGPASSWORD=<your-password> psql -h localhost -p 5432 -U postgres -d basins`
+`extend_postgis_dataset.py`).  
+&gt;`$ raster2pgsql -s 3005 -e -I -C -Y 1000 -M -f nalcms_2010 -t auto /home/danbot/Documents/code/23/bcub/input_data/NALCMS/NA_NALCMS_landcover_2010_3005_clipped.tif basins_schema.nalcms_2010 | PGPASSWORD=<your-password> psql -h localhost -p 5432 -U postgres -d basins`
 
 ### PostgreSQL basics
 
 [Instructions from
 DigitalOcean](https://www.digitalocean.com/community/tutorials/how-to-install-postgresql-on-ubuntu-22-04-quickstart).
 
-Switch to postgres role: `sudo -i -u postgres`
+Switch to postgres role:  
+&gt;`$ sudo -i -u postgres`
 
-Access postgres prompt: `psql`
+Access postgres prompt:  
+&gt;`$ psql`
 
-Change databases: `\c <db_name>`
+Change databases:  
+&gt;`# \c <db_name>`
 
-Quit postgres prompt: `\q`
+Quit postgres prompt:  
+&gt;`# \q`
 
-Return to regular system: `exit`
+Return to regular system:  
+&gt;`# exit`
 
-Change user: `sudo -i -u postgres`
+Create a postgres user with your default user name:  
+&gt;`sudo -u postgres createuser <username>`
 
-basins database info:
-
-`user: postgres` `pass: <your_password>`
-
-Create a new database
-
-`postgres@server:~$ createdb basins`
+Create a new database:  
+&gt;`postgres@server:~$ createdb basins`
 
 Create the postgis extension (done from the psql terminal after
-connecting to “basins” db): &gt;`CREATE EXTENSION postgis;`
-
-Create a postgres user with your default user name:
-&gt;`sudo -u postgres createuser <username>`
+connecting to “basins” db):  
+&gt;`basins# CREATE EXTENSION postgis;`
 
 ### Kill a long running query:
 
-First, find the PID of the active process:
-&gt;`SELECT * FROM pg_stat_activity WHERE state = 'active';`
+If, like me, you write an impossibly inefficient query and it takes
+forever to run, you can kill it. First, find the PID of the active
+process:  
+&gt;`basins# SELECT * FROM pg_stat_activity WHERE state = 'active';`
 
-Kill the query: &gt;`SELECT pg_cancel_backend(<pid>);`
+Kill the query with the PID you just found:  
+&gt;`basins# SELECT pg_cancel_backend(<pid>);`
 
 <!-- Automate citation formatting for the README document.
 
