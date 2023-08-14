@@ -1,27 +1,33 @@
 Automated Basin Delineation and Attribute Extraction
 ====================================================
 
-This repository provides an automated pipeline for generating large
-samples of basins from DEM. First, DEM files are collected from an
-open-source repository, then assembled into a raster tile mosaic. The
-study region (British Columbia) is broken into “complete” basin
-sub-regions, defined by boundaries crossed only by outflowing stream
-networks. The polygons describing these sub-regions are used to create
-clipped rasters, which are then hydraulically enforced (fill depressions
-and resolve flats) to create flow direction, flow accumulation, and
-stream network rasters. The stream network raster is used as a binary
-mask to identify river confluences to use for the final step, basin
-delineation.
+This repository provides an example of how an automated pipeline for
+generating large samples of basins from DEM may be carried out. First,
+DEM files are collected from an open-source repository, then assembled
+into a raster tile mosaic. The study region (British Columbia) is broken
+into “complete” basin sub-regions, defined by boundaries crossed only by
+outflowing streams. The polygons describing these sub-regions are used
+to create clipped rasters, which are then hydraulically conditioned
+(fill depressions and resolve flats) to create flow direction, flow
+accumulation, and stream network rasters. The stream network raster is
+used as a binary mask to identify river confluences to use for the final
+step, basin delineation.
 
-The resulting collection of basins is an estimate of a decision space
-for the network optimization problem. The basin delineation process
-raises interesting questions about digital representation of stream
-networks and basin attributes. In the DEM preprocessing steps, we use
-topography to identify stream networks. Stream networks are represented
-by cells that meet a minimum flow accumulation threshold. There is no
-single number to represent this minimum threshold, but here we assume a
+The resulting collection of basins is an approximated decision space for
+the network optimization problem. The basin delineation process raises
+interesting questions about digital representation of stream networks
+and basin attributes. In the DEM preprocessing steps, we use topography
+to identify stream networks. Stream networks are represented by cells
+that meet a minimum flow accumulation threshold. There is no single
+number to represent this minimum threshold, but here we assume a
 constant value and the user should interpret these smallest headwater
 basins with caution.
+
+> **Note**<br> This repository is not production software, the code is
+> provided as-is as an example of how a large sample of basins can be
+> delineated while capturing a variety of well known attributes. The
+> user is responsible for ensuring the code is suitable for their
+> purposes.
 
 Set up Computing Environment
 ----------------------------
@@ -191,30 +197,38 @@ confluences in lakes. &gt;`$ python lakes_filter.py`
 Land cover and soil data layers
 -------------------------------
 
-Land cover rasters can be downloaded from the [North American Land
-Change Monitoring System
+Reprojecting and clipping of land cover and soil geospatial layers is
+done in `clip_and_reproject_spatial_layers.py`. You must first download
+both files as they are not included in this repositpry. Land cover
+rasters can be downloaded from the [North American Land Change
+Monitoring System
 (NALCMS)](http://www.cec.org/north-american-land-change-monitoring-system/).
-
-Download the files you want to work with (2010, 2015, and 2020 land
-cover rasters are available) from the link above, and keep note of the
-file path where the files are saved or save them to a new folder at
-`input_data/NALCMS/`. The files are large and may take a while to
-download. The files are not included in this repository.
-
 The soil permeability and porosity information is contained in the
 [GLobal HYdrogeology MaPS
-(GLHYMPS)](https://borealisdata.ca/dataset.xhtml?persistentId=doi%3A10.5683/SP2/TTJNIU)
-dataset. Download the files you want to work with from the link above,
-and keep note of the file path where the files are saved or save them to
-a new folder at `input_data/GLHYMPS/`. The file is large and may take a
-while to download. The files are not included in this repository.
+(GLHYMPS)](https://borealisdata.ca/dataset.xhtml?persistentId=doi:10.5683/SP2/TTJNIU)
+dataset.
 
-The GLHYMPS dataset contains global coverage, so you may first want to
-clip it to the bounding box of the study region. The bounding box is
-provided in the `input_data/` folder. The bounding box is a shapefile,
-so you can use QGIS or similar software to clip the GLHYMPS dataset and
-reproject. The clipped file should be saved to the `input_data/GLHYMPS/`
-folder.
+2010, 2015, and 2020 land cover rasters are available and all three are
+used in the BCUB dataset. Download the NALCMS files you want to work
+with from the link above, and keep note of the file path where the files
+are saved or save them to a new folder at `input_data/NALCMS/`. The
+files are large and may take a while to download.
+
+The [GLHYMPS 2.0
+dataset](https://borealisdata.ca/dataset.xhtml?persistentId=doi:10.5683/SP2/TTJNIU)
+is about 2.6 GB compressed, or 30GB uncompressed, so be sure you have
+enough disk space. The GLHYMPS dataset is clipped and reprojected at the
+beginning of the `clip_and_reproject_spatial_layers.py` script. The
+download file is a zip archive `GLHYMPS.zip`. Unzip the nested archive
+files and uncompress the files the `GLHYMPS.gdb` file to the
+`input_data/GLHYMPS/` folder.
+
+The GLHYMPS dataset contains global coverage and it is over 30GB
+uncompressed, so you want to first clip it to the bounding box of the
+study region and then reproject to EPSG 3005. The reprojection step is
+important to do once at the outset instead of reprojecting at each basin
+intersection operation. The clipped and reprojected GLHYMPS file should
+be saved to the `input_data/GLHYMPS/` folder.
 
 ### Basin delineation
 
@@ -233,18 +247,22 @@ Note that the file will be very large because of the polygon geometry.
 The parquet format is more efficient for reading and writing, but
 geojson can be viewed in QGIS.
 
+Since the basin delineation process involves clipping rasters to each
+derived basin, the terrain attributes are calculated at the same time to
+avoid duplicate processing.
+
 Basin Attribute Extraction
---------------------------
+==========================
 
 Two methods are provided to extract attributes from the basins. The
-first, `extract_attributes.py`, extracts attributes from the basins and
-saves them to a `geojson` file. The second, `populate_postgis.py`, first
-creates a Postgres database with the PostGIS extension and then
-populates the database. The first method is more direct and easier to
-use, but the second method yields a format that is more performant for
-spatial querying.
+first extracts attributes from the basin polygons as they are saved in
+the parquet file by individually clipping/intersecting the polygons with
+the geospatial layers containing soil and land cover information. The
+second builds a Postgres + PostGIS database to take advantage of
+processing performance both in basin attribute extraction and later for
+large sample spatial computations.
 
-### Direct Extraction
+### Direct Attribute Processing/Extraction
 
 The `extract_attributes_direct.py` script will extract attributes from
 the basin polygon sets and save them to a `geojson` file. The attributes
@@ -252,29 +270,31 @@ are extracted from the DEM, land cover, and soil data layers. Since the
 pour points are unique, the pour point geometry column is used to index
 rows between the basin geometry (polygon) files and the attribute files.
 This makes interacting with the data more performant since we drop the
-polygon geometry column that’s responsible for most of the memory usage.
+polygon geometry column that’s responsible for most of the disk space
+requirement.
 
-Postgres & PostGIS
-------------------
+Postgres & PostGIS Database
+---------------------------
 
-### Steps to recreate:
+The basic steps to build a large sample ungauged basin database are as
+follows:
 
-1.  create database
-2.  create schema
-3.  create table
-4.  populate table
+1.  Create database,
+2.  Format geospatial layers for loading into database,
+3.  Load geospatial layers and create spatial indices,
+4.  Extract attributes from basin polygons and update database.
 
 The `create_database.py` script assumes Postgres is installed, and a
 user (with password) and a database have been created. See additional
 notes below for a few useful commands.
 
+For a details on setting up Postgres and PostGIS, see [this
+tutorial](https://www.digitalocean.com/community/tutorials/how-to-install-and-use-postgresql-on-ubuntu-22-04).
+
 Towards the bottom of `create_database.py`, there are four variables
 that are required to establish a database connection. `db_host`,
 `db_name`, `db_user`, and `db_password`. Update these variables to match
 your database configuration.
-
-For a details on setting up Postgres and PostGIS, see [this
-tutorial](https://www.digitalocean.com/community/tutorials/how-to-install-and-use-postgresql-on-ubuntu-22-04).
 
 > **Note**<br> `db_host` is typically localhost, but if you are
 > connecting to a remote database, you will need to update this
@@ -282,7 +302,7 @@ tutorial](https://www.digitalocean.com/community/tutorials/how-to-install-and-us
 
 ### Create a Database
 
-Create a database named `basins`:
+Create a database, here we call it `basins`:
 &gt;`$ sudo -u postgres createdb basins`
 
 #### Enable PostGIS
@@ -293,6 +313,16 @@ extension: &gt;`$ sudo -u postgres psql`
 Switch to the ‘basins’ database &gt;`postgres=# \c basins`
 
 Enable the PostGIS extension: &gt;`postgres=# CREATE EXTENSION postgis;`
+
+Allow password authentication for the postgres user. This is required
+for the `create_database.py` script to connect to the database. Edit the
+`pg_hba.conf` file (/etc/postgresql/15/main/pg\_hba.conf) and change the
+line (near the bottom of the file, note you may have version 14 instead
+of 15): """ \# Database administrative login by Unix domain socket local
+all postgres peer """ to
+
+""" \# Database administrative login by Unix domain socket local all
+postgres md5 """
 
 Restart the database service after any configuration change:
 &gt;`$ sudo systemctl restart postgresql`
@@ -326,11 +356,26 @@ Once the `create_database` script has been executed successfully:
 Create raster table
 -------------------
 
-> raster2pgsql -s 3005 -f nalcms\_2010\_raster -I -C -M
-> Clipped\_NALCMS\_2010\_land\_cover\_30m\_3005.tif -t 97x175
-> basins\_schema.nalcms\_2010 | psql -d basins
+In the example below, update the path to reflect the full filepath where
+the reprojected and clipped NALCMS raster is saved. The `-s` flag
+specifies the SRID, `-f` specifies the name of the raster column, `-I`
+creates a spatial index, `-C` adds a constraint to the raster column,
+and `-M` adds a metadata table. The `-t` flag specifies the tile size,
+see the [following
+stackexchange](https://gis.stackexchange.com/questions/300887/optimum-raster-tile-size)
+post about optimal tile settings. The last argument is the schema and
+table name. The raster table will be created in the `basins` database.
 
-Repeat for other geospatial layers.
+Switch users and connect to the database: &gt;`# sudo -i -u postgres`
+&gt;`# psql -d basins`
+
+Enable the postgis extension: &gt;`CREATE EXTENSION postgis;`
+
+Enable the raster extension: &gt;`CREATE EXTENSION postgis_raster;`
+
+Run the raster2psql function to create a raster table (this is done in
+`extend_postgis_dataset.py`).
+&gt;`raster2pgsql -s 3005 -e -I -C -Y 1000 -M -f nalcms_2010 -t auto /home/danbot/Documents/code/23/bcub/input_data/NALCMS/NA_NALCMS_landcover_2010_3005_clipped.tif basins_schema.nalcms_2010 | PGPASSWORD=<your-password> psql -h localhost -p 5432 -U postgres -d basins`
 
 ### PostgreSQL basics
 
@@ -359,6 +404,16 @@ Create a new database
 
 Create the postgis extension (done from the psql terminal after
 connecting to “basins” db): &gt;`CREATE EXTENSION postgis;`
+
+Create a postgres user with your default user name:
+&gt;`sudo -u postgres createuser <username>`
+
+### Kill a long running query:
+
+First, find the PID of the active process:
+&gt;`SELECT * FROM pg_stat_activity WHERE state = 'active';`
+
+Kill the query: &gt;`SELECT pg_cancel_backend(<pid>);`
 
 <!-- Automate citation formatting for the README document.
 

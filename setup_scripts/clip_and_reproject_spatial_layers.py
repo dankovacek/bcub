@@ -32,7 +32,7 @@ reproj_bounds_path_4269 = os.path.join(BASE_DIR, 'input_data/region_bounds_4269.
        
 # use the mask geometry to clip the GLHYMPS vector file
 glhymps_dir = os.path.join(BASE_DIR, 'input_data/GLHYMPS/')
-glhymps_fpath = os.path.join(glhymps_dir, 'GLHYMPS.gdb')
+glhymps_fpath = os.path.join(glhymps_dir, 'GLHYMPS.shp')
 glhymps_clipped_fpath = os.path.join(glhymps_dir, 'GLHYMPS_clipped.gpkg')
 reproj_glhymps_fpath = os.path.join(glhymps_dir, 'GLHYMPS_clipped_3005.geojson')
 reproj_mask_glhymps_crs = os.path.join(BASE_DIR, 'input_data/region_bounds_glhymps_crs.shp')

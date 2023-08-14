@@ -202,9 +202,6 @@ def convert_parquet_to_postgis_db(parquet_dir, db_host, db_name, db_user, db_pas
                         
         geometry_cols = [c for c in df.columns if 'geometry' in c]
         non_geo_cols = [c for c in df.columns if 'geometry' not in c]
-        
-        # non_geo_cols = [c for c in non_geo_cols if c != 'ID']        
-        # non_geo_cols = [c for c in non_geo_cols if c != 'index']
 
         if len(non_geo_cols) > len(set(non_geo_cols)):
             raise Exception('Duplicated column names in non-geometry columns.')
@@ -224,8 +221,7 @@ def convert_parquet_to_postgis_db(parquet_dir, db_host, db_name, db_user, db_pas
         conn = psycopg2.connect(host=db_host, dbname=db_name, user=db_user, password=db_password)
         cur = conn.cursor()
 
-        print('    Database connected...')
-        
+        print('    Database connected...')        
         all_cols = [geom_dict[e] for e in geometry_cols] + non_geo_cols
         
         # res = df.apply(insert_vals_to_db, cur=cur, geom_cols=geometry_cols, non_geo_cols=non_geo_cols, axis=1)
