@@ -59,16 +59,6 @@ Activate the virual environment:
 Install Python packages:  
 &gt;`$ pip install -r requirements.txt`
 
-<!-- 
-### High Performance Array Computing
-
-The basin delineation and attribute extraction steps take a lot of time. To speed up the process, namely for array computations on large basins, the Jax library is used to enable GPU computation. See [installation details](https://github.com/google/jax#pip-installation-gpu-cuda-installed-via-pip-easier) for more information. Alternatively, you can use the equivalent numpy functions where the Jax library is used.
-
-To get your system’s version of CUDA (on Linux): &gt;`$ nvidia-smi`
-
-![Where to find the CUDA version for Jax library
-installation.](../img/cuda_version.png) -->
-
 Data Acquisition and Processing
 -------------------------------
 
@@ -82,8 +72,9 @@ be downloaded from the [USGS map
 downloader](https://apps.nationalmap.gov/downloader/). A text file
 pre-populated with the links to covering tiles is provided in this repo.
 The tiles can be downloaded and merged into a virtual raster with gdal
-by running the `get_3DEP_DEM.py` script saved under `setup_scripts`:  
-&gt;`$ python get_3DEP_DEM.py`
+by running the `get_3DEP_DEM.py` script saved under `setup_scripts`:
+
+> `$ python get_3DEP_DEM.py`
 
 > **Warning**<br> **The tile list urls will at some point change**:
 > After downloading, compare the study region polygon with the tile set
@@ -151,7 +142,9 @@ Generate pour points
 Using the stream raster, generate pour points at river confluences.
 Confluences are defined as stream cells with more than one inflow. An
 inflow is an adjacent stream cell whose flow direction points to the
-focal cell. &gt;`$ python find_pour_points.py`
+focal cell.
+
+> `$ python find_pour_points.py`
 
 ### Hydrographic features dataset
 
