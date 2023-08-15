@@ -219,14 +219,13 @@ def convert_to_parquet(merged_basins, output_fpath, attributes_fpath):
     
 
 region_codes = [
-    '08P',
-    # '08O',
+    '08D', '08E', '08F', '08G', '08H',
+    '08P', '08O',
     # '07U', 
     # '07G', 
-    # '07O', 
-    # '08G', 
-    # '08H', '08E', '08A', '08D', 
-    # '09A', '08F', '08B', '08C', 
+    # '07O',
+    # '08A',
+    # '09A', '08A', '08B', '08C', 
     # '08N',
     # 'ERockies', 
     # 'Fraser', 
@@ -253,7 +252,7 @@ def main():
         # get the file size in MB
         filesize = (os.path.getsize(fdir_path) >> 20 )
 
-        temp_folder = os.path.join(DATA_DIR, f'derived_basins/{region}/temp/')        
+        temp_folder = os.path.join(DATA_DIR, f'derived_basins/{region}/temp/') 
         ppt_folder = os.path.join(DATA_DIR, f'pour_points/{region}/')
         output_polygon_folder = os.path.join(DATA_DIR, f'derived_basins/{region}')
 

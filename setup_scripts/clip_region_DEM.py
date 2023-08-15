@@ -84,7 +84,7 @@ all_masks = [e for e in os.listdir(mask_dir) if e.endswith('.geojson')]
 region_codes = [e.split('_')[0] for e in all_masks]
 
 # or set a custom list of masks to process
-region_codes = ['08P']
+# region_codes = ['10E']
 
 i = 0
 for code in region_codes:

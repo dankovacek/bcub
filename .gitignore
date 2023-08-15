@@ -8,6 +8,7 @@ input_data/AK_*/
 input_data/processed_dem/
 input_data/NHN_INDEX*/
 input_data/region_polygons/
+input_data/BasinATLAS/
 
 input_data/NHN_data/*
 input_data/NALCMS/*

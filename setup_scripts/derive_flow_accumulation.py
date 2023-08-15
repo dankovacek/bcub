@@ -22,9 +22,8 @@ DEM_DIR = os.path.join(DATA_DIR, 'processed_dem/')
 
 processed_files = os.listdir(DEM_DIR)
 
-
 region_files = os.listdir(DEM_DIR)
-region_codes = [e.split('_')[0] for e in region_files]
+region_codes = sorted([e.split('_')[0] for e in region_files])
 
 def retrieve_raster(fpath):
     rds = rxr.open_rasterio(fpath, masked=True, mask_and_scale=True)

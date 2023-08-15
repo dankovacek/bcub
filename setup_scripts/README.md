@@ -90,21 +90,43 @@ the image at right:
 ![DEM Mosaic of BC and administrative boundary
 regions](../img/DEM_tiled_trimmed.png)
 
+> **Note**<br> The set of covering DEM tiles can be customized using the
+> tile index accessible at [USGS.gov The National Map Data
+> Repository](http://prd-tnm.s3.amazonaws.com/index.html?prefix=StagedProducts/Elevation/1/FullExtentSpatialMetadata/).
+
 Sub-region Polygons
 -------------------
 
 The study region is split into sub-regions that describe “complete
 basins”, in other words the region bounds have no inflows, only
 outflows. This is an important property when delineating basins at
-arbitrary points in space. The sub-regions are derived from Water Survey
-of Canada sub-sub-catchment (SSC) polygons from the National
-Hydrographic Network (NHN) and from the USGS for southeast Alaska.
-
-A zipped archive file of region polygons is provided in
-`input_data/region_polygons.zip`. Unzip the folder in its existing
-location.
+arbitrary points in space. The sub-regions are derived from
+[HydroSHEDS](https://www.hydrosheds.org/products/hydrobasins) level 5
+and 6 polygons and grouped together where the level 5 regions cross
+major rivers. The region polygons are provided in
+`input_data/region_polygons.zip` and this archive should be unzipped to
+the same folder. The remainder of this section describes how the region
+polygons were created and can be skipped if you are using the provided
+region polygons.
 
 > `$ unzip input_data/region_polygons.zip -d input_data/region_polygons/`
+
+The HydroBASINS level 5 and 6 polygon ID groupings are listed in
+`input_data/HYDRO_basins/HYDRO_basin_ids.csv` to show how IDs are
+grouped into sub-region codes in this study, in addition to which file
+each HYDROBasin polygon originates. The following files must be
+downloaded from the [HydroSHEDS
+website](https://www.hydrosheds.org/page/hydrobasins) and saved to the
+`input_data/HYDRO_basins/` folder:
+
+-   ‘hybas\_lake\_ar\_lev05\_v1c.zip’,
+-   ‘hybas\_lake\_ar\_lev06\_v1c.zip’,
+-   ‘hybas\_lake\_na\_lev06\_v1c.zip’, and
+-   ‘hybas\_lake\_na\_lev05\_v1c.zip’
+
+Merging the region polygons is done by the following script:
+
+> `$ python merge_region_polygons.py`
 
 ![Merging process for complete sub-regions.](../img/merging_regions.png)
 
@@ -124,8 +146,7 @@ flow direction, accumulation, and stream network generation.
 
 Create the individual region DEM files using the provided region
 polygons and the DEM tile mosaic created in the previous step:  
-&gt;`$ cd setup_scripts/`  
-&gt;`$ python clip_region_DEM.py`
+&gt;`$ python setup_scripts/clip_region_DEM.py`
 
 > **Note**<br> **Check the list of region polygons to process**: The dem
 > processing scripts are initialized to test just the smallest region
@@ -134,74 +155,33 @@ polygons and the DEM tile mosaic created in the previous step:
 
 Process the region DEMs to create rasters representing flow direction,
 flow accumulation, and stream network:  
-&gt;`$ python derive_flow_accumulation.py`
+&gt;`$ python setup_scripts/derive_flow_accumulation.py`
 
-Generate pour points
---------------------
+Land cover, soil, and other spatial data layers
+-----------------------------------------------
 
-Using the stream raster, generate pour points at river confluences.
-Confluences are defined as stream cells with more than one inflow. An
-inflow is an adjacent stream cell whose flow direction points to the
-focal cell.  
-&gt;`$ python find_pour_points.py`
-
-### Hydrographic features dataset
-
-The last step before basin delineation is to filter spurious pour
-points.
-
-> **Note**<br> The hydrographic features file is large (14 GB, 29 GB
-> uncompressed) and may take a while to download. The file is not
-> included in this repository.
-
-First, download the hydrographic features dataset
-(\`rhn\_nhn\_hhyd.gpkg.zip\`\`) from the [National Hydrographic
-Network](https://open.canada.ca/data/en/dataset/a4b190fe-e090-4e6d-881e-b87956c07977).
-
-Create a folder for the NHN data (*from the root directory*):  
-&gt;`$ mkdir input_data/NHN_data` Specify the new directory as the
-destination for the download using wget (alternatively just visit the
-link and download the file manually):  
-&gt;`$ wget https://ftp.maps.canada.ca/pub/nrcan_rncan/vector/geobase_nhn_rhn/gpkg_en/CA/rhn_nhn_hhyd.gpkg.zip -P input_data/NHN_data`
-Unzip the file:  
-&gt;`$ unzip -j -d input_data/NHN_data input_data/NHN_data/rhn_nhn_hhyd.gpkg.zip`
-Remove the zip file:  
-&gt;`$ rm input_data/NHN_data/rhn_nhn_hhyd.gpkg.zip`
-
-> **Warning**<br> **There is currently a bug preventing geopandas/fiona
-> from opening this file**: The bug seems to be related to this
-> [issue](https://github.com/Toblerity/Fiona/issues/1270). A PR appears
-> to have been submitted to resolve the issue, so check for updates. As
-> a workaround, the `pyogrio` engine is specified and a bounding box is
-> provided at import. see the `lakes_filter.py`.
-
-### Filter spurious pour points
-
-Once the file is downloaded, the `lakes_filter` script will clip the NHN
-water bodies features to each sub-region polygon to reduce RAM usage.
-The water body polygons are then used to filter out (spurious)
-confluences in lakes.  
-&gt;`$ python lakes_filter.py`
-
-Land cover and soil data layers
--------------------------------
-
-Reprojecting and clipping of land cover and soil geospatial layers is
-done in `clip_and_reproject_spatial_layers.py`. You must first download
-both files as they are not included in this repositpry. Land cover
-rasters can be downloaded from the [North American Land Change
+Reprojecting and clipping of land cover, soil, and climate geospatial
+layers is done in `clip_and_reproject_spatial_layers.py`. You must first
+download both files as they are not included in this repositpry. Land
+cover rasters can be downloaded from the [North American Land Change
 Monitoring System
 (NALCMS)](http://www.cec.org/north-american-land-change-monitoring-system/).
 The soil permeability and porosity information is contained in the
 [GLobal HYdrogeology MaPS
 (GLHYMPS)](https://borealisdata.ca/dataset.xhtml?persistentId=doi:10.5683/SP2/TTJNIU)
-dataset.
+dataset (Huscroft et al. 2018). Climate and other indices are dervied
+from [BasinATLAS](https://www.hydrosheds.org/hydroatlas)(Linke et al.
+2019).
+
+### NALCMS Land Cover
 
 2010, 2015, and 2020 land cover rasters are available and all three are
 used in the BCUB dataset. Download the NALCMS files you want to work
 with from the link above, and keep note of the file path where the files
 are saved or save them to a new folder at `input_data/NALCMS/`. The
 files are large and may take a while to download.
+
+### GLHYMPS Soil Data
 
 The [GLHYMPS 2.0
 dataset](https://borealisdata.ca/dataset.xhtml?persistentId=doi:10.5683/SP2/TTJNIU)
@@ -218,6 +198,44 @@ study region and then reproject to EPSG 3005. The reprojection step is
 important to do once at the outset instead of reprojecting at each basin
 intersection operation. The clipped and reprojected GLHYMPS file should
 be saved to the `input_data/GLHYMPS/` folder.
+
+### HydroSHEDS Data
+
+HydroSHEDS is a large dataset featuring global coverage of hydrographic
+features. The three main components are HydroBASINS, HydroLAKES,
+HydroRIVERS, and HydroATLAS. We used the first to subdivide the study
+region into complete basin regions, and we will use the second to filter
+pour points from the set we derive in the next step. HydroATLAS is used
+later to extract climate indices and other attributes related to runoff
+generating mechanisms. For more information about the contents of
+BasinATLAS, see the
+[documentation](https://data.hydrosheds.org/file/technical-documentation/BasinATLAS_Catalog_v10.pdf).
+
+The last step before basin delineation is to filter spurious pour
+points. We use the lake polygons from the
+[HydroLAKES](https://data.hydrosheds.org/file/hydrolakes/HydroLAKES_polys_v10.gdb.zip)
+dataset (Messager et al. 2016) to filter out confluences that fall
+within lakes. For more information about HydroLAKES, see the [HydroSHEDS
+website](https://www.hydrosheds.org/page/hydrolakes). The file is large
+and may take a while to download. The HydroLAKES lake polygon layers
+file is not included because of its large size.
+
+Generate pour points
+--------------------
+
+Using the stream raster, generate pour points at river confluences.
+Confluences are defined as stream cells with more than one inflow. An
+inflow is an adjacent stream cell whose flow direction points to the
+focal cell.  
+&gt;`$ python setup_scripts/find_pour_points.py`
+
+### Filter spurious pour points
+
+Once the file is downloaded, the `lakes_filter` script will clip the NHN
+water bodies features to each sub-region polygon to reduce RAM usage.
+The water body polygons are then used to filter out (spurious)
+confluences in lakes.  
+&gt;`$ python lakes_filter.py`
 
 ### Basin delineation
 
@@ -422,6 +440,21 @@ the maximum slope of the focal cell (in degrees), from Hill (1981).
 
 Next Steps
 ----------
+
+Huscroft, Jordan, Tom Gleeson, Jens Hartmann, and Janine Börker. 2018.
+“Compiling and Mapping Global Permeability of the Unconsolidated and
+Consolidated Earth: GLobal Hydrogeology Maps 2.0 (Glhymps 2.0).”
+*Geophysical Research Letters* 45 (4): 1897–1904.
+
+Linke, Simon, Bernhard Lehner, Camille Ouellet Dallaire, Joseph Ariwi,
+Günther Grill, Mira Anand, Penny Beames, et al. 2019. “Global
+Hydro-Environmental Sub-Basin and River Reach Characteristics at High
+Spatial Resolution.” *Scientific Data* 6 (1): 283.
+
+Messager, Mathis Loı̈c, Bernhard Lehner, Günther Grill, Irena Nedeva, and
+Oliver Schmitt. 2016. “Estimating the Volume and Age of Water Stored in
+Global Lakes Using a Geo-Statistical Approach.” *Nature Communications*
+7 (1): 13603.
 
 U.S. Geological Survey. 2020. “USGS 3D Elevation Program Digital
 Elevation Model.”

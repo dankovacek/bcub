@@ -10,7 +10,6 @@ import rioxarray as rxr
 from shapely.geometry import Polygon, Point
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
 DEM_DIR = os.path.join(BASE_DIR, 'input_data/DEM')
 
 # ensure the folders exist
@@ -23,19 +22,20 @@ input_data_dir = os.path.join(BASE_DIR, 'input_data/')
 tile_links = pd.read_csv(os.path.join(input_data_dir, 'file_lists/USGS_3DEP_tile_links.txt'), header=None)
 url_list = tile_links.values.flatten().tolist()
 
-targets = ['n50w121', 'n50w122']#, 'n48w121', 'n49w121']
+# targets = ['n50w121', 'n50w122']#, 'n48w121', 'n49w121']
 
-url_list = [u for u in url_list if u.split('/')[-1].split('_')[2] in targets]
+# url_list = [u for u in url_list if u.split('/')[-1].split('_')[2] in targets]
 
-# print(url_list[:3])
-# print('')
-# print(asfd)
+existing_files = os.listdir(DEM_DIR)
+url_list = [u for u in url_list if u.split('/')[-1] not in existing_files]
 
+download_target = '/media/danbot/Samsung_T51/geospatial_data/DEM_data/USGS_3DEP/'
 
 def download_file(url):    
     filename = url.split('/')[-1]
     command = f'wget {url} -P {DEM_DIR}'
     save_path = f'{DEM_DIR}/{filename}'
+    save_path = os.path.join(download_target, filename)
 
     if not os.path.exists(save_path):
         os.system(command)

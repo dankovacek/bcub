@@ -45,8 +45,7 @@ basin_threshold = int(min_basin_area * 1E6 / (90 * 90))
 region_files = os.listdir(DEM_DIR)
 
 region_codes = sorted(list(set([e.split('_')[0] for e in region_files])))
-region_codes = ['08P']
-
+# region_codes = ['08P']
 
 ####  Add cell_idx, acc, etc. to the ppt_df
 
