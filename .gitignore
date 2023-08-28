@@ -5,7 +5,7 @@ references/
 input_data/*.vrt
 input_data/DEM/
 input_data/AK_*/
-input_data/processed_dem/
+processed_dem/
 input_data/NHN_INDEX*/
 input_data/region_polygons/
 input_data/BasinATLAS/
@@ -16,6 +16,8 @@ input_data/GLHYMPS/*
 processed_data/basin_properties/
 processed_data/pour_points/*
 processed_data/derived_basins/
-
+results/
+superseded/
+*.qgz
 
 __pycache__/

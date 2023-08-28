@@ -27,7 +27,7 @@ wbt.verbose = False
 DEM_source = 'USGS_3DEP'
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DEM_folder = os.path.join(BASE_DIR, 'input_data/processed_dem/')
+DEM_folder = os.path.join(BASE_DIR, 'processed_data/processed_dem/')
 region_files = os.listdir(DEM_folder)
 region_codes = sorted(list(set([e.split('_')[0] for e in region_files])))
 
@@ -39,7 +39,7 @@ def retrieve_raster(region):
     raster = rxr.open_rasterio(fpath, mask_and_scale=True)
     crs = raster.rio.crs
     affine = raster.rio.transform(recalc=False)
-    return raster, crs, affine
+    return raster, crs, affine, fpath
 
 
 def get_region_area(region):
@@ -123,10 +123,10 @@ def create_batches(df, filesize, temp_ppt_filepath):
     # save the pour point dataframe to temporary filRes
     # and limit temporary raster files to ?GB / batch
     
-    batch_limit = 1E5
+    # batch_limit = 2.5E3
+    batch_limit = 2.5E5
     n_batches = int(filesize * len(df) / batch_limit) + 1
     print(f'        ...running {n_batches} batch(es) on {filesize:.1f}MB raster.')
-    
     batch_paths = []
     n = 0
     if len(df) * filesize < batch_limit:
@@ -164,12 +164,33 @@ def batch_basin_delineation(fdir_path, ppt_batch_path, temp_raster_path):
     )
 
 
+def process_dem_by_basin(region, batch_gdf, raster_crs, region_raster_fpath, temp_folder):
+    
+    ct0 = time.time()
+    polygon_inputs = [(region, 'dem', i, row, raster_crs, region_raster_fpath, temp_folder) for i, row in batch_gdf.iterrows()]
+    with mp.Pool() as pl:
+        temp_raster_paths = pl.map(bpf.dump_poly, polygon_inputs)
+    
+    ct1 = time.time()
+    print(f'    {(ct1-ct0)/60:.1f}min to create {len(polygon_inputs)} clipped rasters.')
+    pl.close()
+    with mp.Pool() as pl:
+        terrain_data = pl.map(bpf.process_terrain_attributes, temp_raster_paths)
+        ct2 = time.time()
+        print(f'    {(ct2-ct1)/60:.1f}min to process terrain attributes for {len(polygon_inputs)} basins.')
+    
+    terrain_gdf = pd.DataFrame(terrain_data)
+    
+    return terrain_gdf
+
+
 def clean_up_temp_files(temp_folder, batch_rasters):    
     temp_files = [f for f in os.listdir(temp_folder) if 'temp' in f]
     raster_clips = [e for e in os.listdir(temp_folder) if DEM_source in e]
     all_files = batch_rasters + raster_clips + temp_files
     for f in list(set(all_files)):
         os.remove(os.path.join(temp_folder, f))
+
 
 def raster_to_vector_basins_batch(input):
 
@@ -204,24 +225,24 @@ def raster_to_vector_basins_batch(input):
     return gdf
 
 
-def convert_to_parquet(merged_basins, output_fpath, attributes_fpath):
-    # we want to end up with multiple geometries:
-    # i) pour point, 2) basin polygon, 3) basin centroid
-    # these column names must match the names mapped to geometry
-    # columns in the populate_postgis file
-    merged_basins['basin_geometry'] = merged_basins['geometry']
-    merged_basins['centroid_geometry'] = merged_basins['geometry'].centroid
-    merged_basins['geometry'] = [Point(x, y) for x, y in zip(merged_basins['ppt_x'], merged_basins['ppt_y'])]
-    # convert to parquet format
+def convert_to_parquet(merged_basins, output_fpath): 
+    # we want to end up with multiple geometries: 
+    # i) pour point, 2) basin polygon, 3) basin centroid 
+    # these column names must match the names mapped to geometry 
+    # columns in the populate_postgis file 
+    merged_basins['basin_geometry'] = merged_basins['geometry'] 
+    merged_basins['centroid_geometry'] = merged_basins['geometry'].centroid 
+    merged_basins['geometry'] = [Point(x, y) for x, y in zip(merged_basins['ppt_lon_m_3005'], merged_basins['ppt_lat_m_3005'])]
+    # convert to parquet format 
     # keep the index as this will be used to 
-    # reference polygons and attributes later
+    # reference polygons and attributes later 
     merged_basins.to_parquet(output_fpath, index=True)
     
 
 region_codes = [
-    '08D', '08E', '08F', '08G', '08H',
-    '08P', '08O',
-    # '07U', 
+    'HGW',
+    'VCI',
+    'WWA', 
     # '07G', 
     # '07O',
     # '08A',
@@ -262,7 +283,7 @@ def main():
 
         print(f'Processing region {region} ({rn}/{len(region_codes)})')
 
-        region_raster, region_raster_crs, _ = retrieve_raster(region)
+        region_raster, region_raster_crs, _, region_raster_fpath = retrieve_raster(region)
         raster_resolution = tuple(abs(e) for e in region_raster.rio.resolution())
         
         print(f'    {region} raster crs = {region_raster_crs}.')
@@ -274,10 +295,9 @@ def main():
 
         # check for an output file to allow for partial updating
         # by tracking (unique) ppt indices
-        output_folder = os.path.join(DATA_DIR, f'derived_basins/{region}/')
-        
+        output_folder = os.path.join(DATA_DIR, f'derived_basins/{region}/')        
         output_fpath = os.path.join(output_folder, f'{region}_basins.parquet')
-        attributes_fpath = os.path.join(output_folder, f'{region}_basin_attributes.geojson')
+        # attributes_fpath = os.path.join(output_folder, f'{region}_basin_attributes.geojson')
         # if os.path.exists(output_fpath):
         #     continue
         
@@ -299,12 +319,7 @@ def main():
             ppt_file = os.path.join(ppt_folder, f'{region}_pour_pts_filtered.geojson')
             
             ppt_gdf = gpd.read_file(ppt_file)
-                        
-            # check that all pour point cell indices are unique
-            ppt_gdf.drop_duplicates(
-                subset=['cell_idx'], 
-                keep='first', inplace=True, ignore_index=True
-                )
+
             batch_ppt_paths = create_batches(ppt_gdf, filesize, temp_ppt_filepath)
         else:
             print(f'    Retrieving existing batch paths.')
@@ -316,7 +331,7 @@ def main():
         for ppt_batch_path in batch_ppt_paths:
             t_batch_start = time.time()
             batch_no = int(ppt_batch_path.split('_')[-1].split('.')[0])
-            print(f'  Starting processing {region} batch {batch_no}/{n_batch_files}')
+            print(f'  Starting processing {region} batch {batch_no+1}/{n_batch_files}')
             temp_fname = f'{region}_temp_raster.tif'
             temp_basin_raster_path = os.path.join(temp_folder, temp_fname)            
             batch_output_fpath = output_fpath.replace('.parquet', f'_{batch_no:04d}.geojson')
@@ -325,7 +340,7 @@ def main():
             if len(batch_rasters) <= 2:
                 batch_basin_delineation(fdir_path, ppt_batch_path, temp_basin_raster_path)
                 batch_rasters = sorted([e for e in sorted(os.listdir(temp_folder)) if e.endswith('.tif')])
-
+                
             tb1 = time.time()
             print(f'    Basins delineated for {region} ppt batch {batch_no} in {(tb1-t_batch_start)/60:.1f}min. \n      {len(batch_rasters)} raster sub-batches to process.')
 
@@ -351,23 +366,42 @@ def main():
             batch_gdf.sort_values(by='VALUE', inplace=True)
             batch_gdf.reset_index(inplace=True, drop=True)
             
+            # compute drainage area for each polygon
+            batch_gdf['drainage_area_km2'] = batch_gdf['geometry'].area / 1E6
+            
             # if ordering is correct, we don't have to do this step
             # we can instead just iterate over polygons, derive attributes,
             # assign values to ppt dataframe.
             # add the pour point location info to each polygon
             batch_gdf = bpf.match_ppt_to_polygons_by_order(ppt_batch_path, batch_gdf, raster_resolution)
 
-            batch_gdf.to_file(batch_output_fpath)            
+            # extract terrain attributes
+            assert batch_gdf.crs.to_epsg() == region_raster_crs; 'Batch gdf crs does not match region raster crs.'
+            terrain_results = process_dem_by_basin(region, batch_gdf, region_raster_crs, 
+                                                     region_raster_fpath, temp_folder)
+            
+            terrain_gdf = pd.DataFrame(terrain_results)
+            # sort by ID column
+            terrain_gdf.sort_values(by='ID', inplace=True)
+            terrain_gdf.set_index('ID', inplace=True)
+            
+            # check that the batch_gdf and terrain_gdf have the same index
+            assert (batch_gdf.index == terrain_gdf.index).all()
+            
+            # concatenate the terrain columns to the batch_gdf
+            merged_gdf = gpd.GeoDataFrame(pd.concat([batch_gdf, terrain_gdf], axis=1), crs=region_raster_crs)
+            merged_gdf['region_code'] = region
+            merged_gdf.to_file(batch_output_fpath)
             batch_output_files.append(batch_output_fpath)
             
             # clean up the temporary files
             clean_up_temp_files(temp_folder, batch_rasters)
-        
-        
+                    
         merged_basins = bpf.merge_geojson_files(batch_output_files, output_fpath, output_polygon_folder)
         
+        
         # save the results to a parquet file containing geometry
-        convert_to_parquet(merged_basins, output_fpath, attributes_fpath)
+        convert_to_parquet(merged_basins, output_fpath)
         
         t_n = time.time()
         n_processed_basins = max(1, n_processed_basins)

@@ -39,8 +39,8 @@ def dump_poly(inputs):
         string: list of filepaths for the clipped rasters.
     """
     region, layer, i, row, crs, raster_fpath, temp_folder = inputs
-            
-    bdf = gpd.GeoDataFrame(geometry=[row['basin_geometry']], crs=crs)
+
+    bdf = gpd.GeoDataFrame(geometry=[row['geometry']], crs=crs)
 
     basin_fname = f'basin_temp_{i:05d}.geojson'
     basin_fpath = os.path.join(temp_folder, basin_fname)
@@ -56,6 +56,9 @@ def dump_poly(inputs):
     if not os.path.exists(fpath_out):
         # Do the actual clipping
         command = f'gdalwarp -s_srs {crs} -cutline {basin_fpath} -crop_to_cutline -multi -of gtiff {raster_fpath} {fpath_out} -wo NUM_THREADS=ALL_CPUS'
+        print('doing gdalwarp')
+        print(command)
+        print('   ...')
         os.system(command)
 
     g = None
@@ -86,20 +89,16 @@ def match_ppt_to_polygons_by_order(ppt_batch_path, polygon_df, resolution):
         print('')
 
     polygon_df['acc_polygon'] = (polygon_df.geometry.area / (resolution[0] * resolution[1])).astype(int)
-    polygon_df['ppt_acc'] = ppt_batch['acc'].values.astype(int)
-    polygon_df['acc_diff'] = (polygon_df['ppt_acc'] - polygon_df['acc_polygon']).astype(int)
-    polygon_df['FLAG_acc_match'] = (polygon_df['acc_diff'].abs() > 2).astype(int)
-
-    polygon_df['ppt_x'] = ppt_batch.geometry.x.values.round(2)
-    polygon_df['ppt_y'] = ppt_batch.geometry.y.values.round(2)
-    polygon_df['cell_idx'] = ppt_batch['cell_idx'].values
-
+    polygon_df['ppt_acc'] = [e if (e > 0) else None for e in ppt_batch['acc'].values.astype(int)]
+    
+    # create latitude and longitude columns from the ppt_batch dataframe
+    polygon_df['ppt_lon_m_3005'] = ppt_batch['geometry'].x
+    polygon_df['ppt_lat_m_3005'] = ppt_batch['geometry'].y    
     # polygon_df.reset_index(inplace=True, drop=True)
     polygon_df['VALUE'] = polygon_df['VALUE'].astype(int)
     polygon_df.set_index('VALUE', inplace=True)
     polygon_df.sort_index(inplace=True)
     polygon_df.index.name = 'ID'
-
     return polygon_df
 
 
@@ -304,7 +303,7 @@ def process_terrain_attributes(raster_path):
     
     basin_data['Aspect_deg'] = int(wbt_aspect(raster_path))
     basin_data['Slope_deg'] = round(wbt_slope(raster_path), 1)
-
+    
     return basin_data
 
 

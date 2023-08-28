@@ -11,6 +11,7 @@ from shapely.geometry import Polygon, Point
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEM_DIR = os.path.join(BASE_DIR, 'input_data/DEM')
+DEM_DIR = '/media/danbot/Samsung_T51/geospatial_data/DEM_data/USGS_3DEP/'
 
 # ensure the folders exist
 for p in [DEM_DIR]:
@@ -29,38 +30,40 @@ url_list = tile_links.values.flatten().tolist()
 existing_files = os.listdir(DEM_DIR)
 url_list = [u for u in url_list if u.split('/')[-1] not in existing_files]
 
-download_target = '/media/danbot/Samsung_T51/geospatial_data/DEM_data/USGS_3DEP/'
+# download_target = '/media/danbot/Samsung_T51/geospatial_data/DEM_data/USGS_3DEP/'
 
 def download_file(url):    
     filename = url.split('/')[-1]
     command = f'wget {url} -P {DEM_DIR}'
     save_path = f'{DEM_DIR}/{filename}'
-    save_path = os.path.join(download_target, filename)
+    save_path = os.path.join(DEM_DIR, filename)
 
     if not os.path.exists(save_path):
         os.system(command)
     
-        # folder_name = filename.split('.')[0]
-        # os.system(f'tar -xf {DEM_DIR}/{filename} -C {DEM_DIR}')
-    print('')
-
 with Pool() as p:
     p.map(download_file, url_list)
 
 dem_files = os.listdir(DEM_DIR)
-test_file = [f for f in dem_files if f.endswith('.tif')][0]
-raster = rxr.open_rasterio(os.path.join(DEM_DIR, test_file))
+test_file = [f for f in dem_files if f.endswith('.tif')]
+if not test_file:
+    raise Exception; f'No .tif files found at {DEM_DIR}.'
+test_fpath = os.path.join(DEM_DIR, test_file[0])
+raster = rxr.open_rasterio(test_fpath)
 # get the crs of the first file
 crs = raster.rio.crs
 print(f'Creating raster vrt in crs: {crs}')
 
+# first, get the nodata value
+no_val = f'gdalinfo {test_fpath} | grep No'
+os.system(no_val)
+
+
+
 # vrt_output_path = os.path.join(input_data_dir, 'vrt_files')
 # this command builds the dem mosaic "virtual raster"
+# setting the -vrtnodata 0 flag to ensure that ocean pixels are set to 0
 mosaic_file = f'USGS_3DEP_DEM_mosaic_{crs.to_epsg()}.vrt'
-vrt_command = f"gdalbuildvrt -resolution highest -a_srs {crs} {input_data_dir}/{mosaic_file} {DEM_DIR}/*.tif"
+vrt_command = f"gdalbuildvrt -resolution highest -a_srs {crs} -vrtnodata 0 {input_data_dir}/{mosaic_file} {DEM_DIR}/*.tif"
 os.system(vrt_command)
 print(f'Created {mosaic_file} in {input_data_dir}')
-
-# remove the downloaded tar files
-# for f in glob.glob(f'{EENV_DIR}/*.tar.gz'):
-#     os.remove(f)

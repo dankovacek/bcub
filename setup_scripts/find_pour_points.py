@@ -30,7 +30,7 @@ DEM_source = 'USGS_3DEP'
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(BASE_DIR, 'processed_data/')
-DEM_DIR = os.path.join(BASE_DIR, 'input_data/processed_dem/')
+DEM_DIR = os.path.join(BASE_DIR, 'processed_data/processed_dem/')
 
 output_dir = os.path.join(DATA_DIR, f'pour_points/')
 if not os.path.exists(output_dir):
@@ -47,7 +47,6 @@ region_files = os.listdir(DEM_DIR)
 region_codes = sorted(list(set([e.split('_')[0] for e in region_files])))
 # region_codes = ['08P']
 
-####  Add cell_idx, acc, etc. to the ppt_df
 
 def retrieve_raster(region, raster_type, crs=3005):
     filename = f'{region}_{DEM_source}_{crs}_{raster_type}.tif'
@@ -226,7 +225,8 @@ def process_ppts(S, F, A):
 cell_tracking_info = {}
 
 regions_to_process = sorted(list(set(region_codes)))
-processed_regions = list(set([e.split('_')[0] for e in os.listdir(output_dir)]))
+# regions_to_process = ['HGW']
+processed_regions = list(set([e for e in os.listdir(output_dir) if len(os.listdir(os.path.join(output_dir, e))) > 0]))
 
 for region in [r for r in regions_to_process if r not in processed_regions]:
     print('')
@@ -264,9 +264,9 @@ for region in [r for r in regions_to_process if r not in processed_regions]:
     print(f'Completed {region} in  {t_end-t0:.1f}s')
     print(f'Of {total_pts} total stream cells:')
     print(f'    {n_pts_conf} ({100*n_pts_conf/total_pts:.0f}%) are stream confluences,')
+    print(f'    {n_pts_outlet} ({100*n_pts_outlet/total_pts:.0f}%) are stream outlets.')
     # print(f'    {n_pts_grab} ({100*n_pts_grab/n_pts_tot:.0f}%) are accumulation change of >= {min_basin_area} km^2,')
     # print(f'    {n_pts_grap} ({100*n_pts_grap/n_pts_tot:.0f}%) are accumulation changes of >= 50 % of the target cell,')
-    print(f'    {n_pts_outlet} ({100*n_pts_outlet/total_pts:.0f}%) are stream outlets.')
     if len(na_pts) > 0:
         print('')
         print('**Warning**')
@@ -282,14 +282,18 @@ for region in [r for r in regions_to_process if r not in processed_regions]:
         os.makedirs(output_folder)
     
     ppt_gdf = create_pour_point_gdf(stream, ppt_df, crs)
+    
+    del stream
+    del acc
+    del fdir
 
     # save output to geojson
     output_fname = f'{region}_pour_pts.geojson'
     output_path = os.path.join(output_folder, output_fname)
     if not ppt_gdf.empty:
-        ppt_gdf.to_file(output_path, driver='GeoJSON')
-        
+        ppt_gdf.to_file(output_path, driver='GeoJSON')       
         
     t1 = time.time()
     print(f'   ...{len(ppt_gdf)} points created.  Time to write ppt file: {t1-t0:.1f}\n')
+    del ppt_gdf
     

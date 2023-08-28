@@ -27,7 +27,7 @@ wbt.verbose = False
 DEM_source = 'USGS_3DEP'
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DEM_folder = os.path.join(BASE_DIR, 'input_data/processed_dem/')
+DEM_folder = os.path.join(BASE_DIR, 'processed_data/processed_dem/')
 region_files = os.listdir(DEM_folder)
 region_codes = sorted(list(set([e.split('_')[0] for e in region_files])))
 
@@ -324,7 +324,7 @@ def create_batches(basin_data, region):
     
     
 region_codes = [
-    '08P', 
+    'VCI', 
     # '08O',
     # '07U', 
     # '07G', 
@@ -372,31 +372,14 @@ def main():
         
         for batch_idxs in batches:
             basins = basin_data[basin_data['ID'].isin(batch_idxs)].copy()
+
             batch_output_fpath = os.path.join(batch_output_folder, f'{region}_attributes_batch_{batch_no:04}.geojson')
             
             ct0 = time.time()
             # open the parquet file containing basin geometry
             # all geometries should be in EPSG 3005 CRS
             basin_polygons = basins.set_geometry('basin_geometry')[['ID', 'basin_geometry']].copy()
-            basin_polygons = basin_polygons.to_crs(region_raster_crs)
-
-            polygon_inputs = [(region, 'dem', i, row, region_raster_crs, raster_fpath, temp_folder) for i, row in basin_polygons.iterrows()]
-            p = mp.Pool()
-            temp_raster_paths = p.map(bpf.dump_poly, polygon_inputs)
-            ct1 = time.time()
-            print(f'    {(ct1-ct0)/60:.1f}min to create {len(polygon_inputs)} clipped rasters.')
-            p.close()
-                                
-            # extract basin terrain attributes
-            p = mp.Pool()
-            tr0 = time.time()
-            terrain_data = p.map(bpf.process_terrain_attributes, temp_raster_paths)
-            terrain_df = pd.DataFrame.from_dict(terrain_data)
-            terrain_df.set_index('ID', inplace=True)
-            terrain_df.sort_index(inplace=True)
-            tr1 = time.time()
-            print(f'    {(tr1-tr0)/60:.1f}min to process terrain attributes from {len(temp_raster_paths)} clipped rasters.')
-            p.close()        
+            basin_polygons = basin_polygons.to_crs(region_raster_crs)   
             
             # process lulc (NALCMS))
             ct0 = time.time()

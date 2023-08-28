@@ -20,7 +20,7 @@ DEM_source = 'USGS_3DEP'
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(BASE_DIR, 'processed_data/')
-DEM_DIR = os.path.join(BASE_DIR, 'input_data/processed_dem')
+DEM_DIR = os.path.join(BASE_DIR, 'processed_data/processed_dem')
 
 output_path = os.path.join(DATA_DIR, f'pour_points/')
 if not os.path.exists(output_path):
@@ -30,13 +30,13 @@ if not os.path.exists(output_path):
 # set in "derive_flow_accumulation.py"
 min_basin_area = 2 # km^2
 
-nhn_dir = os.path.join(BASE_DIR, 'input_data/NHN_data')
-nhn_fpath = os.path.join(nhn_dir, 'rhn_nhn_hhyd.gpkg')
-# the NHN CRS is EPSG:4617
-nhn_crs = 4617
+lakes_dir = os.path.join(BASE_DIR, 'input_data/BasinATLAS')
+lakes_fpath = os.path.join(lakes_dir, 'HydroLAKES_clipped.gpkg')
+# the HydroLAKES CRS is EPSG:4326
+lakes_crs = 4326
 
-if not os.path.exists(nhn_fpath):
-    err_msg = f'NHN file not found at {nhn_fpath}.  Download from https://ftp.maps.canada.ca/pub/nrcan_rncan/vector/geobase_nhn_rhn/gpkg_en/CA/rhn_nhn_hhyd.gpkg.zip.  See README for details.'
+if not os.path.exists(lakes_fpath):
+    err_msg = f'HydroLAKES file not found at {lakes_fpath}.  Download from https://www.hydrosheds.org/products/hydrolakes.  See README for details.'
     raise Exception(err_msg)
 
 
@@ -122,20 +122,20 @@ def filter_lakes(lakes_df, ppts, resolution):
     # filter lakes smaller than 0.1 km^2
     min_area = 100000
     lakes_df = lakes_df[lakes_df['area'] > min_area]
-    
-    lakes_df = lakes_df[['acquisition_technique', 'lake_id', 'area', 'water_definition', 'planimetric_accuracy', 'permanency', 'geometry']]
-    # filter by water_definition code 
-    # get lakes and reservoirs (4 & 5)
-    lakes_df = lakes_df[(lakes_df['water_definition'] == 4) | (lakes_df['water_definition'] == 5)]
     lakes_df = lakes_df.dissolve().explode(index_parts=False).reset_index(drop=True)
+    lake_cols = lakes_df.columns
     
-    # find and fill holes in polygons
+    # filter out Point type geometries
+    lakes_df = lakes_df[~lakes_df.geometry.type.isin(['Point', 'LineString'])]
+    # find and fill holes in polygons    
     lakes_df.geometry = [Polygon(p.exterior) for p in lakes_df.geometry]
         
     # find the set of lakes that contain confluence points
     lakes_with_pts = gpd.sjoin(lakes_df, ppts, how='left', predicate='intersects')
+    
     # the rows with index_right == nan are lake polygons containing no points
-    lakes_with_pts = lakes_with_pts[~lakes_with_pts['index_right'].isna()]        
+    lakes_with_pts = lakes_with_pts[~lakes_with_pts['index_right'].isna()]
+    lakes_with_pts = lakes_with_pts[[c for c in lakes_with_pts.columns if 'index_' not in c]]
     # drop all duplicate indices
     lakes_with_pts = lakes_with_pts[~lakes_with_pts.index.duplicated(keep='first')]
     lakes_with_pts.area = lakes_with_pts.geometry.area
@@ -145,9 +145,7 @@ def filter_lakes(lakes_df, ppts, resolution):
     distance = 100  # metres
     lakes_with_pts.geometry = lakes_with_pts.buffer(-distance).buffer(distance * 1.5).simplify(resolution/np.sqrt(2))
     lakes_with_pts['geometry'] = lakes_with_pts.apply(lambda row: trim_appendages(row), axis=1)
-    lake_cols = ['acquisition_technique', 'lake_id', 'area', 
-                 'water_definition', 'planimetric_accuracy', 'permanency', 'geometry']
-    return lakes_with_pts[lake_cols]
+    return lakes_with_pts
     
     
 def interpolate_line(inputs):
@@ -203,7 +201,7 @@ def find_link_ids(target):
     link_id = stream_loc.item()
     if ~np.isnan(link_id):
         i, j = np.argwhere(stream.x.values == x)[0], np.argwhere(stream.y.values == y)[0]
-        return [i[0], j[0], f'{i[0]},{j[0]}', Point(x, y), link_id]
+        return [i[0], j[0], Point(x, y), link_id]
     else:
         nbr = stream.rio.clip_box(x-resolution, y-resolution, x+resolution,y+resolution)
         
@@ -223,10 +221,10 @@ def find_link_ids(target):
                 print(x, y, xs, ys, link_id)
                 print(ix, jx)
             if ~np.isnan(link_id):
-                return [ix[0], jx[0], f'{ix[0]},{jx[0]}', Point(x1, y1), link_id]
+                return [ix[0], jx[0], Point(x1, y1), link_id]
             
     return None
-            
+
 
 def add_lake_inflows(lakes_df, ppts, stream, acc):
     
@@ -241,8 +239,8 @@ def add_lake_inflows(lakes_df, ppts, stream, acc):
     # test_pts = []
     for _, row in lakes_df.iterrows():
         n += 1
-        if n % 50 == 0:
-            print(f'   Processing lake group {n}/{len(lakes_df)}, {tot_pts} points so far...')
+        if n % 10 == 0:
+            print(f'   Processing lake group {n}/{len(lakes_df)}.')
         
         lake_geom = row['geometry']        
         # resample the shoreline vector to prevent missing confluence points
@@ -260,7 +258,6 @@ def add_lake_inflows(lakes_df, ppts, stream, acc):
         #           ii) not on a stream link already recorded
         px_pts = stream.sel(x=xs, y=ys, method='nearest', tolerance=resolution)
         latlon = list(set(zip(px_pts.x.values, px_pts.y.values)))
-        print(f'    checking {len(latlon)} pts')
         if len(latlon) == 0:
             print('skip')
             continue
@@ -273,7 +270,7 @@ def add_lake_inflows(lakes_df, ppts, stream, acc):
         results = [r for r in results if r is not None]
         pl.close()
         
-        pts = pd.DataFrame(results, columns=['ix', 'jx', 'cell_idx', 'geometry', 'link_id'])
+        pts = pd.DataFrame(results, columns=['ix', 'jx', 'geometry', 'link_id'])
         # drop duplicate link_ids
         pts['CONF'] = True
         pts = pts[~pts['link_id'].duplicated(keep='first')]
@@ -287,6 +284,8 @@ def add_lake_inflows(lakes_df, ppts, stream, acc):
     all_pts = []
     acc_vals = []
     all_points_df = gpd.GeoDataFrame(pd.concat(points_to_check, axis=0), crs=f'EPSG:{crs}')
+    all_points_df.reset_index(inplace=True, drop=True)
+
     for i, row in all_points_df.iterrows():
         
         pt = row['geometry']
@@ -311,18 +310,11 @@ def add_lake_inflows(lakes_df, ppts, stream, acc):
     all_points['acc'] = acc_vals
     return all_points
     
-        
-regions = list(set([e.split('_')[0] for e in os.listdir(os.path.join(BASE_DIR, 'input_data/region_polygons'))]))
-regions = ['08P']
+region_polygon_dir = os.path.join(BASE_DIR, 'input_data/region_polygons')
+regions = sorted(list(set([e.split('_')[0] for e in os.listdir(region_polygon_dir)])))
+# regions = ['HGW']
 
 for region in regions:
-    print(f'Processing {region}.')
-    
-    # import the stream link raster
-    stream, _, _ = retrieve_raster(region, 'link')
-    acc, _, _ = retrieve_raster(region, 'accum')
-        
-    resolution = abs(stream.rio.resolution()[0])
     
     ppt_folder = os.path.join(DATA_DIR, f'pour_points/{region}')
     if not os.path.exists(ppt_folder):
@@ -331,6 +323,18 @@ for region in regions:
     output_fname = f'{region}_pour_pts_filtered.geojson'
     output_fpath = os.path.join(ppt_folder, output_fname)
     
+    if os.path.exists(output_fpath):
+        print(f'    {region} pour points already processed.')
+        continue 
+    else:
+        print(f'Processing {region}.')
+    
+    # import the stream link raster
+    stream, _, _ = retrieve_raster(region, 'link')
+    acc, _, _ = retrieve_raster(region, 'accum')
+        
+    resolution = abs(stream.rio.resolution()[0])
+    
     # import pour points 
     ppts_fpath = os.path.join(DATA_DIR, f'pour_points/{region}/{region}_pour_pts.geojson') 
     region_ppts = gpd.read_file(ppts_fpath)
@@ -338,15 +342,18 @@ for region in regions:
     t0 = time.time()
     # if the NHN features haven't been clipped to the region polygon, do so now
     region_polygon = get_region_polygon(region)
-    lakes_df_fpath = os.path.join(nhn_dir, f'{region}_lakes.geojson')
+    lakes_output_dir = os.path.join(lakes_dir, 'clipped_lakes')
+    lakes_df_fpath = os.path.join(lakes_output_dir, f'{region}_lakes.geojson')
     if not os.path.exists(lakes_df_fpath):
+        if not os.path.exists(lakes_output_dir):
+            os.mkdir(lakes_output_dir)
         print('    Creating region water bodies layer.')
         t1 = time.time()
         
         # import the NHN water body features
-        bbox_geom = tuple(region_polygon.to_crs(nhn_crs).bounds.values[0])
-        lake_features_box = gpd.read_file(nhn_fpath, engine='pyogrio', 
-                                      layer='nhn_hhyd_Waterbody_2', bbox=bbox_geom)
+        bbox_geom = tuple(region_polygon.to_crs(lakes_crs).bounds.values[0])
+        lake_features_box = gpd.read_file(lakes_fpath, 
+                                      bbox=bbox_geom)
         # clip features to the region polygon
         region_polygon = region_polygon.to_crs(lake_features_box.crs)
         lake_features = gpd.clip(lake_features_box, region_polygon, keep_geom_type=False)
@@ -360,12 +367,12 @@ for region in regions:
         print(f'    File saved.  There are {n_lakes} water body objects in {region}.')
     else:
         lakes_df = gpd.read_file(lakes_df_fpath)
-
-    lake_ppts = gpd.sjoin(region_ppts, lakes_df, how='left', predicate='within')
-    filtered_ppts = lake_ppts[lake_ppts['index_right'].isna()]
+    
+    lake_ppts = region_ppts.clip(lakes_df)
+    
+    filtered_ppts = region_ppts[~region_ppts['cell_idx'].isin(lake_ppts['cell_idx'])]
         
     print(f'    {len(filtered_ppts)}/{len(region_ppts)} confluence points are not in lakes ({len(region_ppts) - len(filtered_ppts)} points removed).')   
-    
     new_pts = add_lake_inflows(lakes_df, filtered_ppts, stream, acc)
     
     output_ppts = gpd.GeoDataFrame(pd.concat([filtered_ppts, new_pts], axis=0), crs=f'EPSG:{stream.rio.crs.to_epsg()}')
@@ -374,6 +381,11 @@ for region in regions:
     print(f'    {n_pts0-n_pts1} points eliminated (fall within lakes)')
     print(f'    {len(new_pts)} points added for lake inflows.')
     print(f'    {n_final} points after filter and merge. ({n_pts0-n_final} difference)')
+    output_ppts['region_code'] = region
+    # create separate columns for geometry latitude and longitude
+    output_ppts['centroid_lon_m_3005'] = output_ppts.geometry.x
+    output_ppts['centroid_lat_m_3005'] = output_ppts.geometry.y
+    output_ppts.drop(labels=['cell_idx', 'ix', 'jx'], axis=1, inplace=True)
     
     output_ppts.to_file(output_fpath)
     te = time.time()

@@ -23,7 +23,7 @@ def close_holes(poly: Polygon) -> Polygon:
 
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATA_DIR = os.path.join(BASE_DIR, 'input_data/HYDRO_basins/')
+DATA_DIR = os.path.join(BASE_DIR, 'input_data/BasinATLAS/HydroBASINS/')
 id_list_fpath = os.path.join(DATA_DIR, 'HYDRO_basin_ids.csv')
 output_folder = os.path.join(BASE_DIR, 'input_data/region_polygons')
 

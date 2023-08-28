@@ -22,11 +22,11 @@ output_dem_crs = 3005
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(BASE_DIR, 'input_data/')
 DEM_DIR = os.path.join(DATA_DIR, 'DEM/')
+PROCESSED_DEM_DIR = os.path.join(BASE_DIR, 'processed_data/processed_dem/')
 mask_dir = os.path.join(DATA_DIR, 'region_polygons/')
 
 # dem tile mosaic "virtual raster"
-mosaic_path = os.path.join(DATA_DIR, f'{DEM_source}_DEM_mosaic_4269.vrt')
-
+mosaic_path = os.path.join(BASE_DIR, f'processed_data/{DEM_source}_DEM_mosaic_4269.vrt')
 
 def get_crs_and_resolution(fname):
     raster = rxr.open_rasterio(fname)
@@ -84,7 +84,7 @@ all_masks = [e for e in os.listdir(mask_dir) if e.endswith('.geojson')]
 region_codes = [e.split('_')[0] for e in all_masks]
 
 # or set a custom list of masks to process
-# region_codes = ['10E']
+# region_codes = ['HGW']
 
 i = 0
 for code in region_codes:
@@ -105,8 +105,8 @@ for code in region_codes:
     mask_check = check_mask_validity(fpath)
 
     # set the output initial path and reprojected path
-    out_path = f'{DATA_DIR}/processed_dem/{grp_code}_{DEM_source}_{dem_crs}.tif'
-    out_path_reprojected = f'{DATA_DIR}/processed_dem/{grp_code}_{DEM_source}_3005.tif'
+    out_path = os.path.join(PROCESSED_DEM_DIR, f'{grp_code}_{DEM_source}_{dem_crs}.tif')
+    out_path_reprojected = os.path.join(PROCESSED_DEM_DIR, f'{grp_code}_{DEM_source}_3005.tif')
 
     # if you want to modify the resulting DEM resolution,
     # you'll need to replace 1 with some other factor here

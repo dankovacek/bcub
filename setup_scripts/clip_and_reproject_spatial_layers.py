@@ -14,7 +14,7 @@ import rioxarray as rxr
 import basin_processing_functions as bpf
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DEM_folder = os.path.join(BASE_DIR, 'input_data/processed_dem/')
+DEM_folder = os.path.join(BASE_DIR, 'processed_data/processed_dem/')
 region_files = os.listdir(DEM_folder)
 region_codes = sorted(list(set([e.split('_')[0] for e in region_files])))
 
