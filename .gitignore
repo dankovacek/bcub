@@ -18,6 +18,7 @@ processed_data/basin_properties/
 processed_data/pour_points/*
 processed_data/derived_basins/
 processed_data/processed_dem/
+processed_data/*.vrt
 results/
 superseded/
 *.qgz
