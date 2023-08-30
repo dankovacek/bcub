@@ -155,7 +155,7 @@ polygons and the DEM tile mosaic created in the previous step:
 
 Process the region DEMs to create rasters representing flow direction,
 flow accumulation, and stream network:  
-&gt;`$ python setup_scripts/derive_flow_accumulation.py`
+&gt;`$ python setup_scripts/process_flow_accumulation.py`
 
 Land cover, soil, and other spatial data layers
 -----------------------------------------------
@@ -237,6 +237,10 @@ The water body polygons are then used to filter out (spurious)
 confluences in lakes.  
 &gt;`$ python lakes_filter.py`
 
+Expect this script to take several hours to process all lake-river
+intersections. The resulting files containing filtered pour points is
+saved to the `processed_data/pour_points` folder.
+
 ### Basin delineation
 
 The data preparation work is nearly complete, now we generate a large
@@ -291,17 +295,17 @@ follows:
 3.  Load geospatial layers and create spatial indices,
 4.  Extract attributes from basin polygons and update database.
 
-The `create_database.py` script assumes Postgres is installed, and a
-user (with password) and a database have been created. See additional
-notes below for a few useful commands.
+The `build_database.py` script assumes Postgres is installed, and a user
+(with password) and a database have been created. See additional notes
+below for a few useful commands.
 
 For a details on setting up Postgres and PostGIS, see [this
 tutorial](https://www.digitalocean.com/community/tutorials/how-to-install-and-use-postgresql-on-ubuntu-22-04).
 
-Towards the bottom of `create_database.py`, there are four variables
-that are required to establish a database connection. `db_host`,
-`db_name`, `db_user`, and `db_password`. Update these variables to match
-your database configuration.
+Towards the bottom of `build_database.py`, there are four variables that
+are required to establish a database connection. `db_host`, `db_name`,
+`db_user`, and `db_password`. Update these variables to match your
+database configuration.
 
 > **Note**<br> `db_host` is typically localhost, but if you are
 > connecting to a remote database, you will need to update this
@@ -318,14 +322,14 @@ Log into the database as the superuser (postgres) and enable the PostGIS
 extension:  
 &gt;`$ sudo -u postgres psql`
 
-Switch to the ‘basins’ database  
+Switch to the ‘basins’ database:  
 &gt;`postgres=# \c basins`
 
 Enable the PostGIS extension:  
 &gt;`postgres=# CREATE EXTENSION postgis;`
 
 Allow password authentication for the postgres user. This is required
-for the `create_database.py` script to connect to the database. Edit the
+for the `build_database.py` script to connect to the database. Edit the
 `pg_hba.conf` file (/etc/postgresql/15/main/pg\_hba.conf) and change the
 line (near the bottom of the file, note you may have version 14 instead
 of 15):
@@ -341,28 +345,27 @@ Restart the database service after any configuration change:
 
 ### Create database tables for basin geometry
 
-Run the `create_database.py` script to create the tables and populate
-the database. The schema should be automatically created from the
-parquet file created from executing the `derive_basins.py` script. The
-`create_database` script will create the attributes table in the
-`basins` database you created and populate it with geometry and basic
-metadata.
+Run the `build_database.py` script to create the tables and populate the
+database. The schema should be automatically created from the parquet
+file created from executing the `derive_basins.py` script. The
+`build_database` script will create the attributes table in the `basins`
+database you created and populate it with geometry and basic metadata.
 
 ### Extend the Database
 
-The `extend_postgis_database.py` script will add the remaining
-attributes. The `extend_postgis_database.py` script will take a while to
-run, so it is recommended to run it in a `tmux` or `screen` session.
-With PostGIS we can create raster tables which can be then used in
-conjunction with the polygons to derive the same set of attributes as
-generated in using the direct attribute extraction method.
+The `extend_database.py` script will add the remaining attributes. The
+`extend_database.py` script will take a while to run, so it is
+recommended to run it in a `tmux` or `screen` session. With PostGIS we
+can create raster tables which can be then used in conjunction with the
+polygons to derive the same set of attributes as generated in using the
+direct attribute extraction method.
 
 Additional Notes
 ----------------
 
 ### List columns in a database table
 
-Once the `create_database` script has been executed successfully:  
+Once the `build_database` script has been executed successfully:  
 &gt;`\d basins_schema.basin_attributes`
 
 Create raster table
@@ -388,7 +391,7 @@ Enable the raster extension:
 &gt;`# CREATE EXTENSION postgis_raster;`
 
 Run the raster2psql function to create a raster table (this is done in
-`extend_postgis_dataset.py`).  
+`extend_database.py`).  
 &gt;`$ raster2pgsql -s 3005 -e -I -C -Y 1000 -M -f nalcms_2010 -t auto /home/danbot/Documents/code/23/bcub/input_data/NALCMS/NA_NALCMS_landcover_2010_3005_clipped.tif basins_schema.nalcms_2010 | PGPASSWORD=<your-password> psql -h localhost -p 5432 -U postgres -d basins`
 
 ### PostgreSQL basics

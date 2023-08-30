@@ -12,7 +12,6 @@ import geopandas as gpd
 import rioxarray as rxr
 
 from shapely.geometry import Polygon
-
 from shapely.validation import make_valid
 
 # specify the DEM source
@@ -24,6 +23,9 @@ DATA_DIR = os.path.join(BASE_DIR, 'input_data/')
 DEM_DIR = os.path.join(DATA_DIR, 'DEM/')
 PROCESSED_DEM_DIR = os.path.join(BASE_DIR, 'processed_data/processed_dem/')
 mask_dir = os.path.join(DATA_DIR, 'region_polygons/')
+
+if not os.path.exists(PROCESSED_DEM_DIR):
+    os.mkdir(PROCESSED_DEM_DIR)
 
 # dem tile mosaic "virtual raster"
 mosaic_path = os.path.join(BASE_DIR, f'processed_data/{DEM_source}_DEM_mosaic_4269.vrt')
@@ -160,7 +162,8 @@ for code in region_codes:
 
 # update the vrt with the resulting dem tif files 
 # as the .bil files have been deleted.
-output_mosaic_path = mosaic_path.replace('.vrt', f'_clipped_{output_dem_crs}.vrt')
-sys_command = f'gdalbuildvrt -resolution highest -a_srs EPSG:{output_dem_crs} {output_mosaic_path} {DATA_DIR}processed_dem/*_{DEM_source}_3005.tif'
+output_mosaic_path = mosaic_path.replace('_4269.vrt', f'_clipped_{output_dem_crs}.vrt')
+
+sys_command = f'gdalbuildvrt -resolution highest -a_srs EPSG:{output_dem_crs} {output_mosaic_path} {PROCESSED_DEM_DIR}/*_{DEM_source}_3005.tif'
 
 os.system(sys_command)

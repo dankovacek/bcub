@@ -123,6 +123,8 @@ def reformat_result(result):
     Each row represents a basin, each column represents a land use class.
     """
     data = [{'id': entry[0], **{value[0]: value[1] for value in entry[1]}} for entry in result]
+    print(data)
+    print(asfasdf)
     df = pd.DataFrame.from_dict(data)
     df = df.fillna(0).astype(int)
     df.set_index('id', inplace=True)
@@ -156,13 +158,25 @@ def retrieve_unprocessed_ids(n_ids, check_cols):
     return [e[0] for e in res]
 
 
-def check_for_processed_attributes(columns, which_set):
+def check_for_basin_geometry(id_list):
+    # check if the basin geometry exists for each id
+    q = f"""SELECT id FROM basins_schema.basin_attributes WHERE id IN ({','.join([str(e) for e in id_list])}) AND basin IS NULL;"""
+    cur.execute(q)
+    res = cur.fetchall()
+    
+    if len(res) > 0:
+        print(f'    {len(res)}/{id_list} basins do not have a valid geometry.')
+        print(f'    Try first running derive_basins.py to create basin geometries.')
+        
+    return res
+
+def get_unprocessed_attribute_rows(columns, which_set):
     id_query = f"""
     SELECT id FROM basins_schema.basin_attributes 
     WHERE ({columns[0]} IS NULL OR {columns[0]} != {columns[0]}) """
     for c in columns[1:]:
-        id_query += f"AND ({c} IS NULL OR {c} != {c}) "
-    cur.execute(id_query + ';')
+        id_query += f"OR ({c} IS NULL OR {c} != {c}) "
+    cur.execute(id_query + 'ORDER by id ASC;')
     ids = cur.fetchall()
     print(f'Number of unprocessed {which_set} rows: {len(ids)}')
     return [e[0] for e in ids]
@@ -308,9 +322,10 @@ def clip_dem_values_by_polygon(inputs):
     return df
 
 
-def process_NALCMS(input_data):
+# def process_NALCMS(input_data):
+def process_NALCMS(id_list, year, schema_name):
     # year, id_list, lu_cols, schema_name = input_data
-    year, id_list, schema_name = input_data
+    # year, id_list, schema_name = input_data
         
     # existing = get_existing_nalcms_vals('basins_schema.nalcms_2010', 'basins_schema.basin_attributes', id_list)
     # df = pd.DataFrame.from_dict(existing, orient='index', columns=['existing'])
@@ -336,38 +351,138 @@ def clip_nalcms_values_by_polygon(raster_table, basin_geom_table, id_list):
     t0 = time()
     
     if len(id_list) == 0:
+        print('No ids found in the list.')
         return gpd.GeoDataFrame()
 
+    # q = f"""
+    # WITH subquery AS (
+    #     SELECT id, (ST_PixelAsCentroids({raster_table}.rast)).val AS pixel_value, COUNT(*) AS count
+    #     FROM {raster_table}, {basin_geom_table}
+    #     WHERE {basin_geom_table}.id IN ({ids})
+    #     --AND ST_Intersects(basins_schema.nalcms_2010.rast, ST_Envelope(basins_schema.basin_attributes.basin))
+    #     AND ST_Intersects({raster_table}.rast, ST_Envelope({basin_geom_table}.basin))
+    #     GROUP BY id, pixel_value
+    # )
+    # SELECT id, jsonb_agg(jsonb_build_array(value_list.value, ROUND(COALESCE(subquery.count, 0)::float / total_count * 100)::int))
+    #     FROM (
+    #         SELECT DISTINCT value FROM unnest(ARRAY[{raster_values}]) AS value -- Modify the array as per your specified integer values
+    #     ) AS value_list
+    #     LEFT JOIN (
+    #         SELECT id, pixel_value, count, SUM(count) OVER (PARTITION BY id) AS total_count
+    #         FROM subquery
+    # ) AS subquery ON value_list.value = subquery.pixel_value
+    # WHERE subquery.id IS NOT NULL
+    # GROUP BY id;
+    # # """
+    
+    #     geometry_filter AS (
+    #     -- Step 2: filter by unsimplified basin polygon
+    #     SELECT
+    #         b.id, 
+    #         p.val as pixel_value
+    #     FROM
+    #         basins_schema.basin_attributes b
+    #     JOIN
+    #         bbox_filter p
+    #     ON 
+    #         ST_WITHIN(ST_SetSRID(ST_MakePoint(p.x, p.y), 3005), b.basin)
+    #     WHERE
+    #         b.id = p.id
+    #     )
+            
+    #     -- Step 3: Filter pixels from the above CTE by exact polygon geometry
+    #     SELECT
+    #         id, 
+    #         pixel_value, 
+    #         COUNT(*) as pixel_count, 
+    #         100.0 * COUNT(*) / SUM(COUNT(*)) OVER(PARTITION BY id) as percentage
+    #     FROM
+    #         geometry_filter
+    #     GROUP BY
+    #         id, pixel_value
+    #     ORDER BY
+    #         id, pixel_value;
+    
+    
     q = f"""
-    WITH subquery AS (
-        SELECT id, (ST_PixelAsCentroids({raster_table}.rast)).val AS pixel_value, COUNT(*) AS count
-        FROM {raster_table}, {basin_geom_table}
-        WHERE {basin_geom_table}.id IN ({ids})
-        AND ST_Intersects({raster_table}.rast, {basin_geom_table}.basin)
-        GROUP BY id, pixel_value
-    )
-    SELECT id, jsonb_agg(jsonb_build_array(value_list.value, ROUND(COALESCE(subquery.count, 0)::float / total_count * 100)::int))
-        FROM (
-            SELECT DISTINCT value FROM unnest(ARRAY[{raster_values}]) AS value -- Modify the array as per your specified integer values
-        ) AS value_list
-        LEFT JOIN (
-            SELECT id, pixel_value, count, SUM(count) OVER (PARTITION BY id) AS total_count
-            FROM subquery
-    ) AS subquery ON value_list.value = subquery.pixel_value
-    WHERE subquery.id IS NOT NULL
-    GROUP BY id;
+    WITH bbox_filter AS (
+        -- Step 1: Filter raster pixels by envelope of each polygon
+        SELECT
+            b.id,
+            (ST_PixelAsCentroids(r.rast)).*
+        FROM
+            {basin_geom_table} b
+        JOIN
+            {raster_table} r 
+        ON 
+            ST_Intersects(r.rast, ST_Envelope(b.basin)) 
+        WHERE
+            b.id IN ({ids}) 
+    ),
+    geometry_filter AS (
+        -- Step 2: filter by unsimplified basin polygon
+        SELECT
+            b.id, 
+            p.val as pixel_value
+        FROM
+            basins_schema.basin_attributes b
+        JOIN
+            bbox_filter p
+        ON 
+            ST_WITHIN(ST_SetSRID(ST_MakePoint(p.x, p.y), 3005), b.basin)
+        WHERE
+            b.id = p.id
+        )
+    SELECT * from geometry_filter;
     """
     
-    # Execute the query in parallel
+    # q1 = f"""SELECT ST_Extent(basin) FROM basins_schema.basin_attributes WHERE id IN ({ids});"""
+    q2 = f'SELECT ST_Extent(rast::geometry) FROM basins_schema.nalcms_2010;'
+    q2 = """WITH RasterInfo AS (
+                SELECT
+                    ST_PixelWidth(rast) AS pixel_width,   -- Pixel width in meters
+                    ST_PixelHeight(rast) AS pixel_height, -- Pixel height in meters
+                    (ST_PixelWidth(rast) * ST_PixelHeight(rast)) AS pixel_area_m2, -- Area of a pixel in m^2
+                    ST_Count(rast, TRUE) AS non_nan_pixels -- Count of non-NaN pixels
+                FROM 
+                    basins_schema.nalcms_2010
+            )
+            SELECT 
+                SUM(pixel_area_m2 * non_nan_pixels) / 1000000 AS total_area_km2
+            FROM 
+                RasterInfo;
+
+            """
+    q2 = """SELECT 
+            ST_PixelWidth(rast) AS pixel_width,
+            ST_PixelHeight(rast) AS pixel_height,
+            ST_Width(rast) AS width_in_pixels,
+            ST_Height(rast) AS height_in_pixels,
+            ST_Count(rast, TRUE) AS non_nan_pixels
+        FROM 
+            basins_schema.nalcms_2010 
+        LIMIT 5;"""
+            
+    q1 = f"""SELECT DISTINCT b.id, COUNT(*)
+            FROM
+                basins_schema.basin_attributes AS b,
+                basins_schema.nalcms_2010 AS r
+            WHERE
+                b.id IN ({ids})
+                AND ST_Intersects(b.basin, ST_Envelope(r.rast));
+        """
+    # print(q2)
     # create a new connection for each process
     with psycopg2.connect(**conn_params) as conn:
         with conn.cursor() as cur:
-            cur.execute(q)
+            cur.execute(q2)
             # Fetch the results
             results = cur.fetchall()
-    # print(f'  {len(results)} results returned.')
+            print(len(results))
+            print(asdfsad)
+            print(f'  {len(results)} results returned.')
+
     df = reformat_result(results)
-        
     return df
 
 
@@ -445,6 +560,7 @@ def intersect_glhymps_by_basin_polygon(inputs):
         # is less than 1% different from the original basin areas
         result['soil_FLAG'] =  ((result['area'] - result['soil_area_sum']) / result['area'] > 0.01).astype(int)
         # only keep soil property related columns
+        df.drop(['soil_area_sum', 'area'], axis=1, inplace=True)
         
     cur.close()
     conn.close()
@@ -734,42 +850,52 @@ def main():
     new_cols = land_cover_attributes + soil_attributes + terrain_attributes
     add_table_columns(schema_name, new_cols)
     
-    all_columns = land_cover_attributes + terrain_attributes + soil_attributes
+    # all_columns = land_cover_attributes + terrain_attributes + soil_attributes
     
-    n_iterations = 5
-    n_ids_per_iteration = 100
-    use_test_ids = False
-    id_list = get_id_list(n_iterations * n_ids_per_iteration, all_columns, use_test_ids=use_test_ids)
+    # n_iterations = 1
+    # n_ids_per_iteration = 1000
+    # use_test_ids = False
+    # id_list = get_id_list(n_iterations * n_ids_per_iteration, all_columns, use_test_ids=use_test_ids)
     
-    if use_test_ids:
-        id_list = [e[0] for e in id_list]
-  
-        
-    nalcms_ids = check_for_processed_attributes(land_cover_attributes, 'land cover')
+    # if use_test_ids:
+    #     id_list = [e[0] for e in id_list]
+          
+    nalcms_ids = get_unprocessed_attribute_rows(land_cover_attributes, 'land cover')
+    basin_geometry_check = check_for_basin_geometry(nalcms_ids)
+    
     if len(nalcms_ids) > 0:
-        batches = np.array_split(nalcms_ids, n_iterations)
-        input_data = [(nalcms_year, id_list, schema_name) for id_list in batches]
-        with mp.Pool() as p:
-            results = p.map(process_NALCMS, input_data)
-            df = pd.concat(results, axis=0, ignore_index=True)
-            print(f'   ...updating {len(df)} land cover rows')
-            update_database(df, schema_name, 'basin_attributes', column_suffix=f'_{nalcms_year}')
+        # input_data = [(nalcms_year, i, schema_name) for i in nalcms_ids[:100]]
+        results = process_NALCMS(nalcms_ids[:10], nalcms_year, schema_name)
+        df = pd.concat(results, axis=0, ignore_index=True)
+        print(f'   ...updating {len(df)} land cover rows')
+        update_database(df, schema_name, 'basin_attributes', column_suffix=f'_{nalcms_year}')
     
-    t0 = time()
+        # n_iterations = int(len(nalcms_ids) / n_ids_per_iteration) 
+        # batches = np.array_split(nalcms_ids, n_iterations)
+        # input_data = [(nalcms_year, id_list, schema_name) for id_list in batches]
+        # for input_batch in batches:
+        #     results = process_NALCMS(input_batch)
+        # with mp.Pool() as p:
+            # results = p.map(process_NALCMS, input_data)
+            # df = pd.concat(results, axis=0, ignore_index=True)
+            # print(f'   ...updating {len(df)} land cover rows')
+            # update_database(df, schema_name, 'basin_attributes', column_suffix=f'_{nalcms_year}')
     
-    soil_ids = check_for_processed_attributes(soil_attributes, 'soil')
+    t0 = time()    
+    soil_ids = get_unprocessed_attribute_rows(soil_attributes, 'soil')
+    basin_geometry_check = check_for_basin_geometry(soil_ids)
     if len(soil_ids) > 0:
         soil_table = f'{schema_name}.glhymps'
         basin_geom_table = f'{schema_name}.basin_attributes'
+        n_iterations = int(len(soil_ids) / n_ids_per_iteration) 
         batches = np.array_split(soil_ids, n_iterations)
         input_data = [(soil_table, basin_geom_table, id_batch) for id_batch in batches]
         with mp.Pool() as p:
             t1 = time()
             results = p.map(intersect_glhymps_by_basin_polygon, input_data)
             df = pd.concat(results, axis=0, ignore_index=True)
-            df.drop(['soil_area_sum', 'area'], axis=1, inplace=True)
             batch_time = (t1 - t0) / n_iterations
-            ut = len(id_list) / (t1 - t0)
+            ut = len(input_data) / (t1 - t0)
             print(f'    Time to process {n_iterations} batches: {t1-t0:.1f} ({batch_time:.0f} s/batch, {ut:.3f} basins/s)')            
             # update the database
             print(f'   ...updating {len(df)} soil rows')
@@ -795,7 +921,7 @@ def main():
 
 
     tbb = time()
-    ut = len(id_list) / (tbb - taa)
+    ut = (len(nalcms_ids) + len(soil_ids)) / (tbb - taa)
     print(f'Finished postgis database modification in {tbb - taa:.2f} seconds ({ut:.2f} rows/s).')
     
 

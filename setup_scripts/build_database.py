@@ -212,7 +212,7 @@ def convert_parquet_to_postgis_db(parquet_dir, db_host, db_name, db_user, db_pas
     
     region_codes = os.listdir(parquet_dir)
     
-    region_codes = ['VCI']
+    region_codes = ['WWA']
 
     for rc in region_codes:
         
@@ -263,6 +263,11 @@ def convert_parquet_to_postgis_db(parquet_dir, db_host, db_name, db_user, db_pas
         query = f'''
         INSERT INTO {schema_name}.basin_attributes ({cols_str}) 
         VALUES %s;'''
+        
+        for col in ['basin', 'centroid', 'pour_pt']:
+            # create GIST spatial index on the geometry columns
+            print(f'    Creating spatial index on {col} column...')
+            cur.execute(f'CREATE INDEX IF NOT EXISTS {col}_idx ON {schema_name}.basin_attributes USING GIST({col});')
 
         # print(tuples[:3])
         extras.execute_values(cur, query, tuples)
