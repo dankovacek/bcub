@@ -64,7 +64,7 @@ os.system(no_val)
 # this command builds the dem mosaic "virtual raster"
 # setting the -vrtnodata 0 flag to ensure that ocean pixels are set to 0
 vrt_folder = os.path.join(BASE_DIR, 'processed_data')
-mosaic_file = f'USGS_3DEP_DEM_mosaic_{crs.to_epsg()}.vrt'
-vrt_command = f"gdalbuildvrt -resolution highest -a_srs {crs} -vrtnodata 0 {vrt_folder}/{mosaic_file} {DEM_DIR}/*.tif"
+mosaic_fpath = os.path.join(vrt_folder, f'USGS_3DEP_DEM_mosaic_{crs.to_epsg()}.vrt')
+vrt_command = f"gdalbuildvrt -resolution highest -a_srs {crs} -vrtnodata 0 {mosaic_fpath} {DEM_DIR}/*.tif"
 os.system(vrt_command)
-print(f'Created {mosaic_file} in {input_data_dir}')
+print(f'Created {mosaic_fpath} in {input_data_dir}')

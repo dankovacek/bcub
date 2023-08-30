@@ -12,7 +12,6 @@ import geopandas as gpd
 import rioxarray as rxr
 
 from shapely.geometry import Polygon
-
 from shapely.validation import make_valid
 
 # specify the DEM source
@@ -24,6 +23,9 @@ DATA_DIR = os.path.join(BASE_DIR, 'input_data/')
 DEM_DIR = os.path.join(DATA_DIR, 'DEM/')
 PROCESSED_DEM_DIR = os.path.join(BASE_DIR, 'processed_data/processed_dem/')
 mask_dir = os.path.join(DATA_DIR, 'region_polygons/')
+if not os.path.exists(PROCESSED_DEM_DIR):
+    os.mkdir(PROCESSED_DEM_DIR)
+
 if not os.path.exists(PROCESSED_DEM_DIR):
     os.mkdir(PROCESSED_DEM_DIR)
 

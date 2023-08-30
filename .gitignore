@@ -13,9 +13,12 @@ input_data/BasinATLAS/
 input_data/NHN_data/*
 input_data/NALCMS/*
 input_data/GLHYMPS/*
+processed_data/basin_attributes/
 processed_data/basin_properties/
 processed_data/pour_points/*
 processed_data/derived_basins/
+processed_data/processed_dem/
+processed_data/*.vrt
 results/
 superseded/
 *.qgz
