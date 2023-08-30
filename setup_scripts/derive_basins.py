@@ -243,15 +243,9 @@ region_codes = [
     'HGW',
     'VCI',
     'WWA', 
-    # '07G', 
-    # '07O',
-    # '08A',
-    # '09A', '08A', '08B', '08C', 
-    # '08N',
-    # 'ERockies', 
-    # 'Fraser', 
-    # 'Peace', 
-    # 'Liard', 
+    '08F', 
+    '08G', 
+
     ]
 
 idx_dict = {}

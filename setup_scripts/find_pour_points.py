@@ -40,7 +40,7 @@ if not os.path.exists(output_dir):
 # set in "derive_flow_accumulation.py"
 min_basin_area = 2 # km^2
 # min number of cells comprising a basin
-basin_threshold = int(min_basin_area * 1E6 / (90 * 90)) 
+# basin_threshold = int(min_basin_area * 1E6 / (90 * 90)) 
 
 region_files = os.listdir(DEM_DIR)
 
@@ -227,7 +227,7 @@ cell_tracking_info = {}
 regions_to_process = sorted(list(set(region_codes)))
 # regions_to_process = ['HGW']
 processed_regions = list(set([e for e in os.listdir(output_dir) if len(os.listdir(os.path.join(output_dir, e))) > 0]))
-
+n_points_total = 0
 for region in [r for r in regions_to_process if r not in processed_regions]:
     print('')
     print(f'Processing candidate pour points for {region}.')
@@ -292,8 +292,9 @@ for region in [r for r in regions_to_process if r not in processed_regions]:
     output_path = os.path.join(output_folder, output_fname)
     if not ppt_gdf.empty:
         ppt_gdf.to_file(output_path, driver='GeoJSON')       
-        
+    n_points_total += len(ppt_gdf)
     t1 = time.time()
     print(f'   ...{len(ppt_gdf)} points created.  Time to write ppt file: {t1-t0:.1f}\n')
     del ppt_gdf
     
+print(f'Found {n_points_total} pour points in total.')

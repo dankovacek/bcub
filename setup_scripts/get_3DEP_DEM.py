@@ -11,7 +11,8 @@ from shapely.geometry import Polygon, Point
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEM_DIR = os.path.join(BASE_DIR, 'input_data/DEM')
-DEM_DIR = '/media/danbot/Samsung_T51/geospatial_data/DEM_data/USGS_3DEP/'
+# DEM_DIR = '/media/danbot/Samsung_T51/geospatial_data/DEM_data/USGS_3DEP/'
+DEM_DIR = '/home/danbot2/code_5820/large_sample_hydrology/common_data/DEM_data/USGS_3DEP/'
 
 # ensure the folders exist
 for p in [DEM_DIR]:
@@ -59,11 +60,11 @@ no_val = f'gdalinfo {test_fpath} | grep No'
 os.system(no_val)
 
 
-
 # vrt_output_path = os.path.join(input_data_dir, 'vrt_files')
 # this command builds the dem mosaic "virtual raster"
 # setting the -vrtnodata 0 flag to ensure that ocean pixels are set to 0
+vrt_folder = os.path.join(BASE_DIR, 'processed_data')
 mosaic_file = f'USGS_3DEP_DEM_mosaic_{crs.to_epsg()}.vrt'
-vrt_command = f"gdalbuildvrt -resolution highest -a_srs {crs} -vrtnodata 0 {input_data_dir}/{mosaic_file} {DEM_DIR}/*.tif"
+vrt_command = f"gdalbuildvrt -resolution highest -a_srs {crs} -vrtnodata 0 {vrt_folder}/{mosaic_file} {DEM_DIR}/*.tif"
 os.system(vrt_command)
 print(f'Created {mosaic_file} in {input_data_dir}')

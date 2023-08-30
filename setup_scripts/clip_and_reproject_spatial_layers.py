@@ -1,14 +1,14 @@
 # generate basins
 import os
-import time
+# import time
 import shutil
 
 import warnings
 warnings.filterwarnings('ignore')
 
-import numpy as np
+# import numpy as np
 import geopandas as gpd
-import pandas as pd
+# import pandas as pd
 import rioxarray as rxr
 
 import basin_processing_functions as bpf
@@ -22,9 +22,10 @@ region_codes = sorted(list(set([e.split('_')[0] for e in region_files])))
 # input file paths
 #########################
 nalcms_dir = os.path.join(BASE_DIR, 'input_data/NALCMS/')
-BasinATLAS_dir = os.path.join(BASE_DIR, 'input_data/BasinATLAS')
 nalcms_fpath = os.path.join(nalcms_dir, 'NA_NALCMS_2010_v2_land_cover_30m.tif')
 reproj_nalcms_path = os.path.join(BASE_DIR, 'input_data/NALCMS/NA_NALCMS_landcover_2010_3005_clipped.tif')
+
+BasinATLAS_dir = os.path.join(BASE_DIR, 'input_data/BasinATLAS')
 
 # masks used to clip the geospatial layers
 mask_path = os.path.join(BASE_DIR, 'input_data/region_bounds/BC_study_region_polygon_4326.geojson')
@@ -129,7 +130,6 @@ if not os.path.exists(reproj_glhymps_fpath):
                 else:
                     os.remove(f)
                 
-    
 
 # clip and reproject the NALCMS raster data
 if not os.path.exists(reproj_nalcms_path):

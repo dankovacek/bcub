@@ -75,10 +75,7 @@ for region in sorted(list(set(region_codes))):
     # b) the maximum accumulation value is near a power of 2 (i.e. 2^15)
 
     acc, _, _ = retrieve_raster(os.path.join(DEM_DIR, out_accum_file))
-    # print(acc)
-    # print(np.nanmax(acc))
-
-
+    
     # UGS 3DEP is 1 arcsecond resolution
     # so the projected resolution varies with latitude.
     resolution = acc.rio.resolution()
@@ -86,8 +83,8 @@ for region in sorted(list(set(region_codes))):
     
     # determine the threshold number of cells 
     # corresponding to the minimum drainage area
-    minimum_basin_size = 5 # km^2
-    threshold = int(minimum_basin_size * 1E6 / (dx * dy))
+    minimum_basin_area = 1 # km^2
+    threshold = int(minimum_basin_area * 1E6 / (dx * dy))
     
     if not os.path.exists(stream_path):
         wbt.extract_streams(

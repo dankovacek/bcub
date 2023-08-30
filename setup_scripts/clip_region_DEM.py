@@ -24,6 +24,8 @@ DATA_DIR = os.path.join(BASE_DIR, 'input_data/')
 DEM_DIR = os.path.join(DATA_DIR, 'DEM/')
 PROCESSED_DEM_DIR = os.path.join(BASE_DIR, 'processed_data/processed_dem/')
 mask_dir = os.path.join(DATA_DIR, 'region_polygons/')
+if not os.path.exists(PROCESSED_DEM_DIR):
+    os.mkdir(PROCESSED_DEM_DIR)
 
 # dem tile mosaic "virtual raster"
 mosaic_path = os.path.join(BASE_DIR, f'processed_data/{DEM_source}_DEM_mosaic_4269.vrt')
@@ -81,7 +83,7 @@ if not os.path.exists(DATA_DIR + 'region_polygons'):
 all_masks = [e for e in os.listdir(mask_dir) if e.endswith('.geojson')]
 
 # get the region code shorthand
-region_codes = [e.split('_')[0] for e in all_masks]
+region_codes = sorted([e.split('_')[0] for e in all_masks])
 
 # or set a custom list of masks to process
 # region_codes = ['HGW']
@@ -154,13 +156,13 @@ for code in region_codes:
     t1 = time.time()
     print(f'      {i+1}/{len(all_masks)} Completed tile merge: {out_path_reprojected} created in {t1-t0:.1f}s.')
     print('')
-    print('')
     i += 1
     
 
 # update the vrt with the resulting dem tif files 
 # as the .bil files have been deleted.
-output_mosaic_path = mosaic_path.replace('.vrt', f'_clipped_{output_dem_crs}.vrt')
-sys_command = f'gdalbuildvrt -resolution highest -a_srs EPSG:{output_dem_crs} {output_mosaic_path} {DATA_DIR}processed_dem/*_{DEM_source}_3005.tif'
+output_mosaic_path = mosaic_path.replace('_4269.vrt', f'_clipped_{output_dem_crs}.vrt')
+
+sys_command = f'gdalbuildvrt -resolution highest -a_srs EPSG:{output_dem_crs} {output_mosaic_path} {PROCESSED_DEM_DIR}/*_{DEM_source}_3005.tif'
 
 os.system(sys_command)
