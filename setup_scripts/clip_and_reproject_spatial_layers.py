@@ -34,13 +34,13 @@ reproj_bounds_path_4269 = os.path.join(BASE_DIR, 'input_data/region_bounds/conve
 
 if not os.path.exists(reproj_bounds_path_4269):
     mask = gpd.read_file(mask_path)
-    mask.geometry = mask.convex_hull
-    mask = mask.to_crs('EPSG:4269')        
+    mask = mask.to_crs('EPSG:4269')     
+    mask.geometry = mask.convex_hull  
     mask.to_file(reproj_bounds_path_4269)
 if not os.path.exists(reproj_bounds_path_4326):
     mask = gpd.read_file(mask_path)
+    mask = mask.to_crs('EPSG:4326') 
     mask.geometry = mask.convex_hull
-    mask = mask.to_crs('EPSG:4326')        
     mask.to_file(reproj_bounds_path_4326)
        
 # use the mask geometry to clip the GLHYMPS vector file
@@ -142,7 +142,8 @@ if not os.path.exists(reproj_nalcms_path):
     
     # get the mask geometry and reproject it using the original NALCMS projection
     if not os.path.exists(reproj_mask_nalcms_crs):
-        mask = gpd.read_file(reproj_bounds_path_4326).to_crs(nalcms_wkt)
+        mask = gpd.read_file(mask_path).to_crs(nalcms_wkt)
+        mask = mask.convex_hull
         mask.to_file(reproj_mask_nalcms_crs)
     
     # first clip the raster, 
