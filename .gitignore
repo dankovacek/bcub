@@ -9,16 +9,19 @@ processed_dem/
 input_data/NHN_INDEX*/
 input_data/region_polygons/
 input_data/BasinATLAS/
+optimization/
 
 input_data/NHN_data/*
 input_data/NALCMS/*
 input_data/GLHYMPS/*
 processed_data/basin_attributes/
+processed_data/daymet/
 processed_data/basin_properties/
 processed_data/pour_points/*
 processed_data/derived_basins/
 processed_data/processed_dem/
 processed_data/*.vrt
+processed_data/fix_parquet_files.py
 results/
 superseded/
 *.qgz

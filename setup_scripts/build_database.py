@@ -131,12 +131,34 @@ def test_query(schema_name, db_host, db_name, db_user, db_password):
     return True, test_df
 
 
+def count_basins_in_db(region):
+    conn = psycopg2.connect(host=db_host, dbname=db_name, user=db_user, password=db_password)
+    q = f"select count(*) from {schema_name}.basin_attributes where region_code = '{region}'"
+    cur = conn.cursor()
+    cur.execute(q)
+    n_basins = cur.fetchall()[0][0]
+    conn.close()
+    return n_basins
+
+
+def get_ppt_count(region):
+    # open the pour point file and count the number of unique pour points
+    ppt_file = os.path.join(data_dir, 'pour_points/', region, f'{region}_pour_pts_filtered.geojson')
+    if not os.path.exists(ppt_file):
+        raise Exception(f'Pour point file not found: {ppt_file}.  You must first run find_pour_points.py then lakes_filter.py to generate this file.')
+    else:
+        ppt_df = gpd.read_file(ppt_file)
+        return len(ppt_df)
+
+
 # @delayed
 def load_file_dgp(filename, schema):
-    df = dgp.read_parquet(filename, 
-                          calculate_divisions=True,
-                          schema=schema 
-                          )
+    t0 = time()
+    # df = dgp.read_parquet(filename, 
+    #                       calculate_divisions=True,
+    #                       schema=schema 
+    #                       )
+    df = gpd.read_parquet(filename, schema=schema)
     # df = df.repartition(npartitions=nparts)
     # replace nan with None
     df = df.replace(to_replace=np.nan, value=None)
@@ -156,7 +178,7 @@ def reformat_geom_cols(df, geometry_cols, nparts):
     # drop original geometry columns    
     drop_cols = ['geometry', 'centroid_geometry', 'basin_geometry']    
     df = df.drop(labels=drop_cols, axis=1)
-    return df.compute()
+    return df
 
 
 def check_polygon_flags(df):
@@ -186,14 +208,15 @@ def convert_parquet_to_postgis_db(parquet_dir, db_host, db_name, db_user, db_pas
                                      schema_name,  total_bounds):
     # connect to the PostGIS database    
     db_initialized, _ = test_query(schema_name, db_host, db_name, db_user, db_password)
-    
+    print(f'     ...the database is initialized: {db_initialized}')
     test_dir = os.path.join(parquet_dir, 'VCI')
     if not os.path.exists(test_dir):
         raise Exception(f'No parquet files found in {parquet_dir}.  derive_basins.py must be run first.')
     test_file = [e for e in os.listdir(test_dir) if e.endswith('.parquet')]
-    parquet_schema = pq.read_schema(os.path.join(test_dir, test_file[0]))    
+    parquet_schema = pq.read_schema(os.path.join(test_dir, test_file[0]))
         
     if not db_initialized:
+
         if len(test_file) == 0:
             raise Exception(f'No parquet files found in {parquet_dir}.')
         print(f'    Postgis database table is empty, creating table and populating columns...')
@@ -208,19 +231,29 @@ def convert_parquet_to_postgis_db(parquet_dir, db_host, db_name, db_user, db_pas
     maxx = int(np.ceil(maxx / divisor) * divisor)
     maxy = int(np.ceil(maxy / divisor) * divisor)
 
-    # completed = ['HGW', 'VCI']
+    # completed = ['08A', 'HGW', 'VCI', '08C', '08D', 
+    # '08F', 'FRA', 'WWA', 'HAY', '08G', '10E',
+    #  'CLR', 'PCR','YKR', 'ERK', '08B', '08E', 'LRD]
     
-    region_codes = os.listdir(parquet_dir)
+    region_codes = sorted(os.listdir(parquet_dir))
     
-    region_codes = ['WWA']
-
+    
     for rc in region_codes:
         
         print(f'Processing {rc} region -----------------------')
+
+        n_basins_in_db = count_basins_in_db(rc)
+        n_ppt = get_ppt_count(rc)
+        
+        if n_basins_in_db > n_ppt:
+            raise Exception(f'    {rc} there should not be more db rows than pour points...')
+        if n_basins_in_db == n_ppt:
+            print(f'    {rc} region already processed ({n_basins_in_db} basins/ppts), skipping...')
+            continue
             
         fpath = os.path.join(parquet_dir, rc)
         nparts = len(os.listdir(fpath))
-        print(f'    Loading file {fpath}...')
+        print(f'    Loading file {fpath.split("/")[-1]}...')
         
         df = load_file_dgp(fpath, parquet_schema)
         
@@ -251,13 +284,7 @@ def convert_parquet_to_postgis_db(parquet_dir, db_host, db_name, db_user, db_pas
         all_cols = [geom_dict[e] for e in geometry_cols] + non_geo_cols
                 
         # res = df.apply(insert_vals_to_db, cur=cur, geom_cols=geometry_cols, non_geo_cols=non_geo_cols, axis=1)
-        tuples = list(df[[e+'_wkb' for e in geometry_cols] + non_geo_cols].itertuples(index=False, name=None))
-
-        # for i in range(len(all_cols)):
-        #     if all_cols[i] not in ['centroid', 'basin', 'geometry', 'geom', 'basin_geometry', 'centroid_geometry']: 
-        #         print('column not a geometry column:')
-        #         print(all_cols[i], tuples[0][i])
-        #     print('#####################################')        
+        tuples = list(df[[e+'_wkb' for e in geometry_cols] + non_geo_cols].itertuples(index=False, name=None))   
 
         cols_str = ', '.join(all_cols)
         query = f'''
@@ -269,7 +296,6 @@ def convert_parquet_to_postgis_db(parquet_dir, db_host, db_name, db_user, db_pas
             print(f'    Creating spatial index on {col} column...')
             cur.execute(f'CREATE INDEX IF NOT EXISTS {col}_idx ON {schema_name}.basin_attributes USING GIST({col});')
 
-        # print(tuples[:3])
         extras.execute_values(cur, query, tuples)
         
         conn.commit()
@@ -305,7 +331,7 @@ if __name__ == '__main__':
     #  minx, miny, maxx, maxy
     total_bounds = bc_bounds.total_bounds
     t2 = time()
-    print(f'Got total bounds in {t2 - t1:.2f} seconds.')
+    print(f'Retrieved total bounds in {t2 - t1:.2f} seconds.')
     schema_name = 'basins_schema'
 
     taa = time()

@@ -42,7 +42,7 @@ def get_crs_and_resolution(fname):
 dem_crs, (w_res, h_res) = get_crs_and_resolution(mosaic_path)
 
 
-def check_mask_validity(mask_path):
+def check_mask_validity(mask_path, dem_crs):
     """Checks the validity of a mask and corrects it if necessary.
 
     Args:
@@ -68,8 +68,8 @@ def check_mask_validity(mask_path):
         # drop invalid geometries
         mask = mask[mask.geometry.is_valid]
         mask['area'] = mask.geometry.area
-        # reproject to 4326 to correspond with DEM tile mosaic
-        mask = mask.to_crs(4326)
+        # reproject to correspond with DEM tile mosaic
+        mask = mask.to_crs(dem_crs)
           
         if all(mask.geometry.is_valid):
             mask.to_file(mask_path, driver='GeoJSON')
@@ -106,7 +106,7 @@ for code in region_codes:
     
     named_layer = file.split('.')[0]
 
-    mask_check = check_mask_validity(fpath)
+    mask_check = check_mask_validity(fpath, dem_crs)
 
     # set the output initial path and reprojected path
     out_path = os.path.join(PROCESSED_DEM_DIR, f'{grp_code}_{DEM_source}_{dem_crs}.tif')

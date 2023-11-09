@@ -6,6 +6,7 @@ import random
 
 import warnings
 warnings.filterwarnings('ignore')
+import psycopg2
 
 import numpy as np
 import geopandas as gpd
@@ -16,6 +17,8 @@ import multiprocessing as mp
 
 from shapely.geometry import Point
 from shapely.validation import make_valid
+from shapely import wkt
+import pyarrow.parquet as pq
 
 from whitebox.whitebox_tools import WhiteboxTools
 
@@ -32,6 +35,17 @@ region_files = os.listdir(DEM_folder)
 region_codes = sorted(list(set([e.split('_')[0] for e in region_files])))
 
 DATA_DIR = os.path.join(BASE_DIR, 'processed_data/')
+
+schema = 'basins_schema'
+attribute_table = 'basin_attributes'
+
+conn_params = {
+    'dbname': 'basins',
+    'user': 'postgres',
+    'password': 'pgpass',
+    'host': 'localhost',
+    'port': '5432',
+}
 
 def retrieve_raster(region):
     filename = f'{region}_USGS_3DEP_3005.tif'
@@ -116,7 +130,6 @@ def check_for_ppt_batches(batch_folder):
     existing_batches = os.listdir(batch_folder)
     return len(existing_batches) > 0
 
-
 def create_batches(df, filesize, temp_ppt_filepath):    
 
     # divide the dataframe into chunks for batch processing
@@ -124,7 +137,7 @@ def create_batches(df, filesize, temp_ppt_filepath):
     # and limit temporary raster files to ?GB / batch
     
     # batch_limit = 2.5E3
-    batch_limit = 2.5E5
+    batch_limit = 2E6
     n_batches = int(filesize * len(df) / batch_limit) + 1
     print(f'        ...running {n_batches} batch(es) on {filesize:.1f}MB raster.')
     batch_paths = []
@@ -164,7 +177,7 @@ def batch_basin_delineation(fdir_path, ppt_batch_path, temp_raster_path):
     )
 
 
-def process_dem_by_basin(region, batch_gdf, raster_crs, region_raster_fpath, temp_folder):
+def process_dem_by_basin(region, batch_gdf, raster_crs, region_raster_fpath, temp_folder, n_procs):
     
     ct0 = time.time()
     polygon_inputs = [(region, 'dem', i, row, raster_crs, region_raster_fpath, temp_folder) for i, row in batch_gdf.iterrows()]
@@ -174,7 +187,7 @@ def process_dem_by_basin(region, batch_gdf, raster_crs, region_raster_fpath, tem
     ct1 = time.time()
     print(f'    {(ct1-ct0)/60:.1f}min to create {len(polygon_inputs)} clipped rasters.')
     pl.close()
-    with mp.Pool() as pl:
+    with mp.Pool(n_procs) as pl:
         terrain_data = pl.map(bpf.process_terrain_attributes, temp_raster_paths)
         ct2 = time.time()
         print(f'    {(ct2-ct1)/60:.1f}min to process terrain attributes for {len(polygon_inputs)} basins.')
@@ -231,26 +244,75 @@ def convert_to_parquet(merged_basins, output_fpath):
     # these column names must match the names mapped to geometry 
     # columns in the populate_postgis file 
     merged_basins['basin_geometry'] = merged_basins['geometry'] 
-    merged_basins['centroid_geometry'] = merged_basins['geometry'].centroid 
+    merged_basins['centroid_geometry'] = merged_basins['geometry'].centroid
     merged_basins['geometry'] = [Point(x, y) for x, y in zip(merged_basins['ppt_lon_m_3005'], merged_basins['ppt_lat_m_3005'])]
+    
+    # if the parquet file exists, append the data if it isn't duplicated
+    if os.path.exists(output_fpath):
+        schema = pq.read_schema(output_fpath)
+        existing_data = gpd.read_parquet(output_fpath, schema=schema)
+        output_data = pd.concat([existing_data, merged_basins])
+        output_data.drop_duplicates(subset=['ppt_lon_m_3005', 'ppt_lat_m_3005'], inplace=True)
+        output_data = gpd.GeoDataFrame(output_data, geometry='geometry', crs=3005)
+    else:
+        output_data = merged_basins
+
     # convert to parquet format 
     # keep the index as this will be used to 
     # reference polygons and attributes later 
-    merged_basins.to_parquet(output_fpath, index=True)
+    output_data.to_parquet(output_fpath, index=True) 
     
 
-region_codes = [
-    'HGW',
-    'VCI',
-    'WWA', 
-    '08F', 
-    '08G', 
+def get_processed_ppts(region, schema, attribute_table):
+    """Query the database for rows with a valid basin geometry.
+    Return the pour point coordinates as a tuple"""
+    q = f"""
+    SELECT ST_AsText(pour_pt)
+    FROM {schema}.{attribute_table} 
+    WHERE region_code = '{region}' AND basin IS NOT NULL;
+    """
+    with warnings.catch_warnings():
+        # ignore warning for non-SQLAlchemy Connecton
+        # see github.com/pandas-dev/pandas/issues/45660
+        warnings.simplefilter('ignore', UserWarning)
+        with psycopg2.connect(**conn_params) as conn:
+            with conn.cursor() as cur:
+                cur.execute(q)
+                results = cur.fetchall() 
+                pts = [e[0] for e in results]
+                df = pd.DataFrame(pts, columns=['pt'])
+                df['geometry'] = df.apply(wkt.loads)
+                return gpd.GeoDataFrame(df, geometry='geometry')
+                
 
+def filter_processed_pts(region, ppt_gdf):
+    processed_pts = get_processed_ppts(region, schema, attribute_table)
+    joined = gpd.sjoin(ppt_gdf, processed_pts, how='left', op='intersects')
+    filtered_gdf = joined[joined['index_right'].isna()]
+    n_processed = len(processed_pts)
+    n_ppts = len(ppt_gdf)
+    print(f'    {len(filtered_gdf)} pour points have not been processed, dropping {n_ppts - n_processed} duplicates.')
+    return filtered_gdf
+
+region_codes = [
+    # 'HGW',
+    # 'VCI',
+    # 'WWA', 
+    # '08C', 
+    # '08F', 
+    # '08G', 
+    # '08A', '08B', 
+    # '08E',
+    # '08C', '10E', 
+    # 'ERK', 'HAY', 'YKR', 
+    # 'CLR', 'PCR', 'FRA',
+    'LRD', 
     ]
 
 idx_dict = {}
 tracker_dict = {}
-def main():    
+    
+def main():
     out_crs = 3005
     min_basin_area = 1.0 # km^2
     rn = 0
@@ -313,6 +375,12 @@ def main():
             ppt_file = os.path.join(ppt_folder, f'{region}_pour_pts_filtered.geojson')
             
             ppt_gdf = gpd.read_file(ppt_file)
+            # filter out any ppts that are alread in the database
+            # first query all the ppt_x and ppt_y values for this region
+            ppt_gdf = filter_processed_pts(region, ppt_gdf)
+            if ppt_gdf.empty:
+                print(f'    All pour points for {region} have already been processed.')
+                continue
 
             batch_ppt_paths = create_batches(ppt_gdf, filesize, temp_ppt_filepath)
         else:
@@ -329,6 +397,10 @@ def main():
             temp_fname = f'{region}_temp_raster.tif'
             temp_basin_raster_path = os.path.join(temp_folder, temp_fname)            
             batch_output_fpath = output_fpath.replace('.parquet', f'_{batch_no:04d}.geojson')
+            if os.path.exists(batch_output_fpath):
+                print(f'    {batch_output_fpath} already exists. Skipping.')
+                batch_output_files.append(batch_output_fpath)
+                continue
             # creates the minimum set of rasters with non-overlapping polygons
             batch_rasters = sorted([e for e in os.listdir(temp_folder) if e.startswith(temp_fname.split('.')[0])])
             if len(batch_rasters) <= 2:
@@ -339,7 +411,12 @@ def main():
             print(f'    Basins delineated for {region} ppt batch {batch_no} in {(tb1-t_batch_start)/60:.1f}min. \n      {len(batch_rasters)} raster sub-batches to process.')
 
             batch_size_GB = len(batch_rasters) * filesize / 1E3
-            n_procs = max(1, int(np.floor((available_memory - 5) / batch_size_GB)) )
+            
+            n_procs = max(1, int(np.floor((available_memory - 22) / batch_size_GB)) )
+            if region in ['PCR', 'FRA', 'LRD']:
+                # these regions have large rasters and require more memory
+                n_procs = 1
+            
             print(f'    Allocating {n_procs:.0f} processes for a batch size of {batch_size_GB:.1f}GB')
             
             # process the raster batches in parallel
@@ -372,7 +449,7 @@ def main():
             # extract terrain attributes
             assert batch_gdf.crs.to_epsg() == region_raster_crs; 'Batch gdf crs does not match region raster crs.'
             terrain_results = process_dem_by_basin(region, batch_gdf, region_raster_crs, 
-                                                     region_raster_fpath, temp_folder)
+                                                     region_raster_fpath, temp_folder, n_procs)
             
             terrain_gdf = pd.DataFrame(terrain_results)
             # sort by ID column

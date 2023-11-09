@@ -1,15 +1,17 @@
 # generate basins
 import os
-# import time
+import time
 import shutil
 
 import warnings
 warnings.filterwarnings('ignore')
 
-# import numpy as np
+import numpy as np
 import geopandas as gpd
-# import pandas as pd
+import pandas as pd
 import rioxarray as rxr
+import multiprocessing as mp
+
 
 import basin_processing_functions as bpf
 
@@ -22,10 +24,10 @@ region_codes = sorted(list(set([e.split('_')[0] for e in region_files])))
 # input file paths
 #########################
 nalcms_dir = os.path.join(BASE_DIR, 'input_data/NALCMS/')
+BasinATLAS_dir = os.path.join(BASE_DIR, 'input_data/BasinATLAS')
+
 nalcms_fpath = os.path.join(nalcms_dir, 'NA_NALCMS_2010_v2_land_cover_30m.tif')
 reproj_nalcms_path = os.path.join(BASE_DIR, 'input_data/NALCMS/NA_NALCMS_landcover_2010_3005_clipped.tif')
-
-BasinATLAS_dir = os.path.join(BASE_DIR, 'input_data/BasinATLAS')
 
 # masks used to clip the geospatial layers
 mask_path = os.path.join(BASE_DIR, 'input_data/region_bounds/BC_study_region_polygon_4326.geojson')
@@ -34,7 +36,7 @@ reproj_bounds_path_4269 = os.path.join(BASE_DIR, 'input_data/region_bounds/conve
 
 if not os.path.exists(reproj_bounds_path_4269):
     mask = gpd.read_file(mask_path)
-    mask = mask.to_crs('EPSG:4269')     
+    mask = mask.to_crs('EPSG:4269')
     mask.geometry = mask.convex_hull  
     mask.to_file(reproj_bounds_path_4269)
 if not os.path.exists(reproj_bounds_path_4326):
@@ -42,6 +44,7 @@ if not os.path.exists(reproj_bounds_path_4326):
     mask = mask.to_crs('EPSG:4326') 
     mask.geometry = mask.convex_hull
     mask.to_file(reproj_bounds_path_4326)
+
        
 # use the mask geometry to clip the GLHYMPS vector file
 glhymps_dir = os.path.join(BASE_DIR, 'input_data/GLHYMPS/')
@@ -57,7 +60,6 @@ reproj_mask_nalcms_crs = os.path.join(BASE_DIR, 'input_data/region_bounds/convex
 if not os.path.exists(reproj_glhymps_fpath):
     # if not os.path.exists(glhymps_fpath):
     #     raise Exception('Download and unzip the GLHYMPS data, see the README for details.')
-    
     layer_name = 'Final_GLHYMPS_Polygon'
     
     glhymps_original_wkt = """
@@ -129,8 +131,8 @@ if not os.path.exists(reproj_glhymps_fpath):
                     shutil.rmtree(f)
                 else:
                     os.remove(f)
+        
                 
-
 # clip and reproject the NALCMS raster data
 if not os.path.exists(reproj_nalcms_path):
     
@@ -162,7 +164,8 @@ if not os.path.exists(reproj_nalcms_path):
     # remove the intermediate step
     if os.path.exists(clipped_nalcms_path):
         os.remove(clipped_nalcms_path)
-        
+
+
 # clip and reproject the HydroLAKES layer
 if not os.path.exists(hydroLakes_clipped_fpath):
     mask = gpd.read_file(mask_path)
@@ -171,4 +174,5 @@ if not os.path.exists(hydroLakes_clipped_fpath):
     command = f'ogr2ogr -nlt PROMOTE_TO_MULTI -f GPKG -clipsrc {bounds_string} {hydroLakes_clipped_fpath} {hydroLakes_fpath}'
     os.system(command)
     
-        
+
+     
