@@ -1,5 +1,4 @@
 import geopandas as gpd
-import dask_geopandas as dgp
 import pyarrow.parquet as pq
 import psycopg2
 import psycopg2.extras as extras
@@ -7,8 +6,8 @@ import os
 from time import time
 import pandas as pd
 
-from dask import dataframe as dd
-import multiprocessing as mp
+# from dask import dataframe as dd
+# import multiprocessing as mp
 
 import numpy as np
 
@@ -235,8 +234,7 @@ def convert_parquet_to_postgis_db(parquet_dir, db_host, db_name, db_user, db_pas
     # '08F', 'FRA', 'WWA', 'HAY', '08G', '10E',
     #  'CLR', 'PCR','YKR', 'ERK', '08B', '08E', 'LRD]
     
-    region_codes = sorted(os.listdir(parquet_dir))
-    
+    region_codes = ['10E']#sorted(os.listdir(parquet_dir))
     
     for rc in region_codes:
         

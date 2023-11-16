@@ -19,7 +19,7 @@ import geopandas as gpd
 # both of these steps require multiple days to process
 process_nalcms = False
 process_glhymps = False
-process_daymet = True
+process_daymet = False
 
 conn_params = {
     'dbname': 'basins',
@@ -41,7 +41,7 @@ PROCESSED_DATA_DIR = os.path.join(BASE_DIR, 'processed_data/')
 nalcms_dir = os.path.join(BASE_DIR, 'input_data/NALCMS/')
 glhymps_dir = os.path.join(BASE_DIR, 'input_data/GLHYMPS/')
 
-daymet_dir = os.path.join(PROCESSED_DATA_DIR, 'daymet/')
+daymet_dir = os.path.join(PROCESSED_DATA_DIR, 'DAYMET/')
 
 glhymps_fpath = os.path.join(glhymps_dir, 'GLHYMPS_clipped_3005.geojson')
 nalcms_fpath = os.path.join(glhymps_dir, 'NA_NALCMS_landcover_2010_3005_clipped.tif')
@@ -120,13 +120,14 @@ def add_table_columns(schema_name, new_cols):
             dtype = 'INT'
         elif 'FLAG' in col:
             dtype = 'INT'
-        elif 'daymet' in col:
+        elif ('prcp' in col) & ~('duration' in col):
+            dtype = 'INT'
+        elif 'sample_size' in col:
             dtype = 'INT'
         else:
             dtype = 'FLOAT'
 
         cur.execute(f'ALTER TABLE {schema_name}.{table_name} ADD COLUMN IF NOT EXISTS {col} {dtype};')
-
     conn.commit()
 
 
@@ -194,25 +195,22 @@ def check_for_basin_geometry(id_list):
     return res
 
 
-def get_unprocessed_attribute_rows(columns, which_set, region=None):
-    
+def get_unprocessed_attribute_rows(column, region=None):
+
     id_query = f"""
     SELECT id, region_code FROM basins_schema.basin_attributes 
-    WHERE 
-        ({columns[0]} IS NULL OR {columns[0]} != {columns[0]}) """
-    for c in columns[1:]:
-        id_query += f"OR ({c} IS NULL OR {c} != {c}) "
+    WHERE ({column} IS NULL OR {column} != {column}) """
+    # for c in columns[1:]:
+    #     id_query += f"OR ({c} IS NULL OR {c} != {c}) "
     
     if region is not None:
         id_query += f"AND (region_code = '{region}') "
     
     id_query += f"ORDER by id ASC;"
-
     cur.execute(id_query)
     results = cur.fetchall()
     df = pd.DataFrame(results, columns=['id', 'region_code'])
     # groups = df.groupby('region_code').count()
-    print(f'Number of unprocessed {which_set} rows: {len(df)}')
     # print(groups)
     return df['id'].values
 
@@ -300,7 +298,7 @@ def update_database(new_data, schema_name, table_name, column_suffix=""):
         FROM (VALUES %s) AS data(id, {v_string})
     WHERE basin_tab.id = data.id;
     """
-    t0 = time()    
+    t0 = time()
     with warnings.catch_warnings():
         # ignore warning for non-SQLAlchemy Connecton
         # see github.com/pandas-dev/pandas/issues/45660
@@ -315,55 +313,7 @@ def update_database(new_data, schema_name, table_name, column_suffix=""):
     # print(f'    {t1-t0:.1f}s to update {len(data_tuples)} polygons ({ut:.1f}/second)')
 
 
-def clip_dem_values_by_polygon(inputs):
-
-    t0 = time()
-    
-    id_list, schema_name, raster_table, basin_geom_table = inputs
-    
-    if len(id_list) == 0:
-        return gpd.GeoDataFrame()
-    
-    ids = ','.join([str(int(e)) for e in id_list])
-
-    q = f"""
-    WITH pixel_matrix AS (
-        SELECT
-            {schema_name}.{basin_geom_table}.id AS basin_id,
-            (ST_PixelAsCentroids({raster_table}.rast)).val AS pixel_value
-        FROM
-            {schema_name}.{raster_table},
-            {schema_name}.{basin_geom_table}
-        WHERE
-            {schema_name}.{basin_geom_table}.id IN ({ids})
-            AND ST_Intersects({raster_table}.rast, {schema_name}.{basin_geom_table}.basin)
-    )
-    SELECT
-        basin_id,
-        ARRAY_AGG(pixel_value) AS pixel_matrix
-    FROM
-        pixel_matrix
-    GROUP BY
-        basin_id;
-    """
-    # Execute the query in parallel
-    # create a new connection for each process
-    with psycopg2.connect(**conn_params) as conn:
-        with conn.cursor() as cur:
-            cur.execute(q)
-            # Fetch the results
-            results = cur.fetchall()
-
-    # print(f'  {len(results)} results returned.')
-    data = [{'id': entry[0], **{value[0]: value[1] for value in entry[1]}} for entry in results]
-    df = pd.DataFrame.from_dict(data)
-    df = df.fillna(0).astype(int)
-    df.set_index('id', inplace=True)
-            
-    return df
-
-
-def clip_raster_values_by_polygon(raster_table, basin_geom_table, id_list):
+def clip_nalcms_raster_values_by_polygon(raster_table, basin_geom_table, id_list):
     raster_values = ','.join([str(e) for e in list(range(1, 20))])
     ids = ','.join([str(int(e)) for e in id_list])
     t0 = time()
@@ -431,59 +381,27 @@ def clip_raster_values_by_polygon(raster_table, basin_geom_table, id_list):
     return df
 
 
-def reformat_daymet_result(results, param):
-    # the result is a lis of tuples, where the first element is the basin id
-    # and the second is the array of values associated with the bid
-    # format a dataframe with the parameter name as the column name
-    # and bid as the id column, where the mean of bid values is in the param column
-    bids, mean_vals, n_samples = [], [], []
-    for bid, values in results:
-        bids.append(bid)
-        if len(values) == 0:
-            print(f'    No values found for basin {bid}')
-            mean_vals.append(0)
-            n_samples.append(0)
-        else:
-            mean_vals.append(round(np.mean(values), 0))
-            n_samples.append(len(values))
-
-    df = pd.DataFrame()
-    df['id'] = bids
-    df[param] = mean_vals
-    df['daymet_sample_size'] = n_samples
-    if 'dry_days' in param:
-        df[param] = (df[param] * 100.0).round(0)
-    df[param] = df[param].astype(int)
-    return df
+def check_all_null_or_nan(values):
+    """Check if all values in a list are null or nan."""
+    return all(x is None or (isinstance(x, float) and np.isnan(x)) for x in values)
 
 
-def clip_daymet_values_by_polygon(raster_table, basin_geom_table, id_list, table_name):
-    
-    ids = ','.join([str(int(e)) for e in id_list])
-    daymet_param = '_'.join(table_name.split('_')[1:])
-    if len(id_list) == 0:
-        print('No ids found in the list.')
-        return pd.DataFrame()
-    
+def nearest_pixel_query(bid, basin_geom_table, raster_table):
     q = f"""
-    WITH pixel_matrix AS (
-        SELECT
-            {basin_geom_table}.id AS basin_id,
-            (ST_PixelAsCentroids({raster_table}.rast)).val AS pixel_value
-        FROM
-            {raster_table},
-            {basin_geom_table}
-        WHERE
-            {basin_geom_table}.id IN ({ids})
-            AND ST_Intersects({raster_table}.rast, {basin_geom_table}.basin)
-    )
     SELECT
-        basin_id,
-        ARRAY_AGG(pixel_value) AS pixel_matrix
+        b.id,
+        b.area,
+        ST_Distance(b.centroid, ST_Centroid(vals.geom)) AS dist_to_nearest_pixel,
+        vals.val AS nearest_pixel_value
     FROM
-        pixel_matrix
-    GROUP BY
-        basin_id;
+        {basin_geom_table} b,
+        LATERAL (
+            SELECT (ST_PixelAsPoints(r.rast)).*
+            FROM {raster_table} r
+            ORDER BY b.centroid <-> (ST_PixelAsPoints(r.rast)).geom LIMIT 1
+        ) AS vals
+    WHERE 
+        b.id = {bid};
     """
     # create a new connection for each process
     with psycopg2.connect(**conn_params) as conn:
@@ -491,13 +409,102 @@ def clip_daymet_values_by_polygon(raster_table, basin_geom_table, id_list, table
             cur.execute(q)
             # Fetch the results
             results = cur.fetchall()
+            return results[0]
+
+
+def reformat_daymet_result(results, param, basin_geom_table, raster_table):
+    # the result is a lis of tuples, where the first element is the basin id
+    # and the second is the array of values associated with the bid
+    # format a dataframe with the parameter name as the column name
+    # and bid as the id column, where the mean of bid values is in the param column
+    bids, mean_vals, areas, n_samples = [], [], [], []
+    for bid, area, values in results:        
+        # check if there are no values for the basin or if all values are null
+        if (len(values) == 0) | check_all_null_or_nan(values):
+            print(f'    No values found for basin {bid}: {area}km^2')
+            # query the neraest pixel value for basins too small or irregularly
+            # shaped to intersect a raster pixel
+            bid, _, distance, nearest_px_val = nearest_pixel_query(bid, basin_geom_table, raster_table)
+            if distance > 1000:
+                print(f'    Nearest pixel is greater than raster resolution: {distance:.1f}m.')
+                continue
+            mean_vals.append(nearest_px_val)
+            areas.append(area)
+            n_samples.append(1)
+            bids.append(bid)
+        else:
+            mean_vals.append(round(np.mean(values), 3))
+            n_samples.append(len(values))
+            areas.append(area)
+            bids.append(bid)
     
-    df = reformat_daymet_result(results, daymet_param)
+    df = pd.DataFrame()
+    df['id'] = bids
+    df[param] = mean_vals
+    # df['samples_size'] = n_samples
+    # df['area'] = areas
+    if ('prcp_freq' in param):
+        # for frequency, convert to percentage and store as integer
+        df[param] = (df[param] * 100.0).round(0)
+    if param == 'prcp':
+        df[param] = df[param].round(0).astype(int)
+    
+    return df
+
+
+
+def clip_daymet_values_by_polygon(raster_table, basin_geom_table, id_list, param):
+    
+    ids = ','.join([str(int(e)) for e in id_list])
+    if len(id_list) == 0:
+        print('No ids found in the list.')
+        return pd.DataFrame()
+    
+    # note in the ST_Clip function, the last argument is TRUE, which means
+    # that the output gets cropped to the extent of the input polygon
+    # the second argument is the band number, which is 1 for daymet rasters
+    
+    q = f"""
+    WITH selected_basins AS (
+        SELECT id, basin, area
+        FROM {basin_geom_table}
+        WHERE id IN ({ids})
+    ), clipped_rasters AS (
+        SELECT 
+            b.id,
+            b.area,
+            ST_Clip(r.rast, 1, b.basin, TRUE) AS rast_clipped
+        FROM 
+            {raster_table} r
+        JOIN selected_basins b ON ST_Intersects(r.rast, b.basin)
+    ), raster_values AS (
+        SELECT 
+            c.id, c.area, vals.val
+        FROM 
+            clipped_rasters c
+            CROSS JOIN LATERAL ST_PixelAsPoints(c.rast_clipped) AS vals
+    ) SELECT 
+        sb.id, sb.area, COALESCE(ARRAY_AGG(rv.val), ARRAY[]::int[]) AS pixel_values
+    FROM 
+        selected_basins sb
+    LEFT JOIN raster_values rv ON sb.id = rv.id
+    GROUP BY
+        sb.id, sb.area;
+    """
+    
+    # create a new connection for each process
+    with psycopg2.connect(**conn_params) as conn:
+        with conn.cursor() as cur:
+            cur.execute(q)
+            # Fetch the results
+            results = cur.fetchall()
+    
+    df = reformat_daymet_result(results, param, basin_geom_table, raster_table)
     return df
 
 
 def process_raster(inputs):
-    raster_set, id_list, schema_name, table_name, column_suffix = inputs
+    raster_set, id_list, schema_name, table_name, column_suffix, param = inputs
     
     t1 = time()
     times = []
@@ -505,9 +512,11 @@ def process_raster(inputs):
     raster_table = f'{schema_name}.{table_name}'
     basin_geom_table = f'{schema_name}.basin_attributes'
     if table_name.startswith('nalcms'):
-        df = clip_raster_values_by_polygon(raster_table, basin_geom_table, id_list)
+        df = clip_nalcms_raster_values_by_polygon(raster_table, basin_geom_table, id_list)
     elif table_name.startswith('daymet'):
-        df = clip_daymet_values_by_polygon(raster_table, basin_geom_table, id_list, table_name)
+        df = clip_daymet_values_by_polygon(raster_table, basin_geom_table, id_list, param)
+    else:
+        print(f'    Unknown raster table name: {table_name}')
     t2 = time()
     times.append(t2-t1)
     ut =  len(id_list) / sum(times)
@@ -692,161 +701,7 @@ def process_glhymps_by_basin_batch(ids):
     
     return output
 
-
-def intersect_glhymps_by_basin_polygon(soil_table, basin_geom_table, id_list):
-            
-    with warnings.catch_warnings():
-        # ignore warning for non-SQLAlchemy Connecton
-        # see github.com/pandas-dev/pandas/issues/45660
-        warnings.simplefilter('ignore', UserWarning)
-        with psycopg2.connect(**conn_params) as conn:
-            
-            with conn.cursor() as cur: 
-                basin_ids = ','.join([str(int(e)) for e in id_list])
-
-                # q = f"""
-                # SELECT 
-                #     t.id, t.area, t.basin,
-                #     s.*,
-                #     ST_Intersection(ST_Simplify(t.basin, 100), s.geometry) AS intersected_soil_geoms
-                # FROM  
-                #     {basin_geom_table} AS t
-                # JOIN
-                #     {soil_table} AS s ON ST_Intersects(t.basin, s.geometry)
-                # WHERE
-                #     t.id IN ({basin_ids})
-                # GROUP BY
-                #     t.id, 
-                #     t.area,
-                #     t.basin,
-                #     s.geometry,
-                #     s.logk_ice_x,
-                #     s.porosity_x,
-                #     s.k_stdev_x1, 
-                #     s.prmfrst;
-                # """
-
-                print(q)
-                # print(dfsa)
-                gdf = gpd.read_postgis(q, conn, geom_col='intersected_soil_geoms')
-                print(gdf)
-                print(len(gdf))
-                print(asdf)
-                gdf['soil_polygon_areas'] = round(gdf['intersected_soil_geoms'].area / 1E6, 2)
-                result = gdf.groupby('id').apply(averaging_functions)
-                
-                if not result.empty:
-                    # add a flag if sum of intersected soil polygon areas 
-                    # is less than 10% different from the original basin areas
-                    result['soil_FLAG'] = (abs(result['area'] - result['soil_area_sum']) / result['area'] > 0.1).astype(int)
-                    # only keep soil property related columns
-                result.drop(['soil_area_sum', 'area'], axis=1, inplace=True)
-        
-    return result
-        
-
-def create_hysets_table(df, table_name):
-    """Create a table and populate with data from the HYSETS dataset.
-    The 'geometry' column represents the basin centroid.
-    
-    ########
-    # This is an awful function and yes, I am ashamed.
-    ########
-
-    Args:
-        df (pandas dataframe): dataframe containing the HYSETS data
-    """
-    # rename the Watershed_ID column to id
-    print('Creating HYSETS table...')    
-    # convert centroid geometry to 3005 
-    df = df.to_crs(3005)
-        
-    # get columns and dtypes
-    hysets_cols = ['Watershed_ID', 'Source', 'Name', 'Official_ID', 
-                   'Centroid_Lat_deg_N', 'Centroid_Lon_deg_E', 'Drainage_Area_km2', 
-                   'Drainage_Area_GSIM_km2', 'Flag_GSIM_boundaries', 
-                   'Flag_Artificial_Boundaries', 'Elevation_m', 'Slope_deg', 
-                   'Gravelius', 'Perimeter', 'Flag_Shape_Extraction', 'Aspect_deg', 
-                   'Flag_Terrain_Extraction', 'Land_Use_Forest_frac', 'Land_Use_Grass_frac', 'Land_Use_Wetland_frac', 
-                   'Land_Use_Water_frac', 'Land_Use_Urban_frac', 'Land_Use_Shrubs_frac', 'Land_Use_Crops_frac', 
-                   'Land_Use_Snow_Ice_frac', 'Flag_Land_Use_Extraction', 
-                   'Permeability_logk_m2', 'Porosity_frac', 'Flag_Subsoil_Extraction', 
-                   ]
-    # convert flag columns to boolean
-    df = df[hysets_cols + ['geometry']]
-    flag_cols = [e for e in sorted(df.columns) if e.lower().startswith('flag')]
-    df[flag_cols] = df[flag_cols].astype(bool)
-    df['Watershed_ID'] = df['Watershed_ID'].astype(int)
-    
-    # add 2010 suffix to land use columns to match bcub dataset
-    land_use_cols = [e for e in hysets_cols if e.startswith('Land_Use')]
-    
-    # print(asdfsd)
-    soil_cols = ['Permeability_logk_m2', 'Porosity_frac']    
-    
-    # drop rows with null values
-    # in the future, we should probably fill these values by 
-    # deriving the basin polygon and extracting the values
-    # this could be part of a validation procedure
-    df = df[~df[soil_cols + land_use_cols].isna().any(axis=1)]
-
-    # remap soil columns to match the bcub dataset
-    df.rename(columns={'Permeability_logk_m2': 'logk_ice_x100', 
-                       'Porosity_frac': 'porosity_x100',}, inplace=True)
-    
-    
-    
-    # remap land use columns to match the bcub dataset
-    df.rename(columns={e: f'{e}_2010' for e in land_use_cols}, inplace=True)
-    
-    land_use_cols = [e for e in df.columns if e.startswith('Land_Use')]
-    df[land_use_cols] = 100 * df[land_use_cols]
-    
-    soil_cols = ['logk_ice_x100', 'porosity_x100']
-    # multiply the soil values by 100 to match the format of the GLHYMPS data 
-    # in the BCUB
-    df[soil_cols] = 100 * df[soil_cols].round(1)
-    
-
-    # convert the centroid geometry to WKB
-    df['centroid'] = df['geometry'].to_wkb(hex=True)
-    
-    cols = [e for e in df.columns if e not in ['geometry', 'centroid']]
-    
-    df = df[['centroid'] + cols]
-
-    # get column dtypes 
-    dtypes = [postgres_types[str(df[c].dtype)] for c in cols]
-    
-    # create the table query
-    q = f'''CREATE TABLE IF NOT EXISTS {schema_name}.{table_name} (
-        centroid geometry(POINT, 3005),
-        '''
-    for c, d in zip(cols, dtypes):
-        q += f'{c} {d},'
-    q = q[:-1] + ');'
-    with warnings.catch_warnings():
-        # ignore warning for non-SQLAlchemy Connecton
-        # see github.com/pandas-dev/pandas/issues/45660
-        warnings.simplefilter('ignore', UserWarning)
-        with psycopg2.connect(**conn_params) as conn:
-            with conn.cursor() as cur:
-                cur.execute(q)                
-                # convert the centroid geometry to WKB
-                cur.execute(f"UPDATE {schema_name}.{table_name} SET centroid = ST_PointFromWKB(decode(centroid, 'hex'));")    
-
-      
-                tuples = list(df[['centroid'] + cols].itertuples(index=False, name=None))
-                cols_str = ', '.join(['centroid'] + cols)
-                query = f"""
-                INSERT INTO {schema_name}.{table_name} ({cols_str})
-                VALUES %s;
-                """
-                extras.execute_values(cur, query, tuples)
-    
-    return df
-    
-
+       
 def get_id_list(n_ids, check_cols, use_test_ids=False):
 
     test_ids = [
@@ -1006,7 +861,7 @@ def table_setup(schema_name, daymet_params):
     for param in daymet_params:
         table_name = f'daymet_{param}'
         daymet_param_table_exists = check_if_table_exists(table_name)
-        if not daymet_param_table_exists:
+        if not daymet_param_table_exists: 
             print(f'    processing daymet {param}')
             daymet_fpath = os.path.join(daymet_dir, f'{param}_mosaic_3005.tiff')
             create_raster_table(schema_name, daymet_fpath, table_name)
@@ -1042,22 +897,24 @@ def main():
     terrain_attributes = ['slope_deg', 'aspect_deg', 'elevation_m', 'drainage_area_km2']
     land_cover_attributes = [f'{e}_{y}' for e in list(land_use_groups.keys()) for y in [2010, 2015, 2020]]
     soil_attributes = ['logk_ice_x100','k_stdev_x100', 'porosity_x100', 'permafrost_FLAG', 'soil_FLAG']
-    # climate_attributes = ['prcp', 'tmax', 'tmin', 'vp', 'swe', 'srad']
-    daymet_params = ['prcp', 'tmin', 'tmax', 'vp', 'swe', 'srad', 'prcp_dry_days', 'prcp_dry_duration']
+    daymet_params = ['prcp', 'tmin', 'tmax', 'vp', 'swe', 'srad', 
+                     'high_prcp_freq','low_prcp_freq', 'high_prcp_duration', 'low_prcp_duration']
 
     # check if all raster tables have been created
-    table_setup(schema_name, daymet_params)
+    # table_setup(schema_name, daymet_params)
 
-    new_cols = land_cover_attributes + soil_attributes + terrain_attributes + daymet_params + ['daymet_sample_size']
+    new_cols = land_cover_attributes + soil_attributes + terrain_attributes + daymet_params 
     add_table_columns(schema_name, new_cols)
 
     ## Add land cover data to the database
     region = None
     if process_nalcms:
         for raster_set in [2010, 2015, 2020]:
-            lc_attrs = [e for e in land_cover_attributes if e.endswith(str(raster_set))]
-            nalcms_ids = get_unprocessed_attribute_rows(lc_attrs, 'land cover', region)
-            nalcms_ids = []
+            lc_attrs = sorted(list(set([e for e in land_cover_attributes if e.endswith(str(raster_set))])))
+            unprocessed = []
+            for p in lc_attrs:
+                unprocessed += get_unprocessed_attribute_rows(p, region)
+            nalcms_ids = list(set(unprocessed))
             table_name = f'nalcms_{raster_set}'
             if len(nalcms_ids) > 0:
                 # basin_geometry_check = check_for_basin_geometry(nalcms_ids)
@@ -1067,10 +924,11 @@ def main():
                 if len(nalcms_ids) > rows_per_batch:
                     n_iterations = int(len(nalcms_ids) / rows_per_batch) 
                     batches = np.array_split(nalcms_ids, n_iterations)
-                    input_data = [(raster_set, id_list, schema_name, table_name, column_suffix) for id_list in batches]
+                    input_data = [(raster_set, id_list, schema_name, table_name, column_suffix, None) for id_list in batches]
                 else:
                     n_iterations = 1
-                    input_data = [(raster_set, nalcms_ids, schema_name, table_name, column_suffix)]
+                    input_data = [(raster_set, nalcms_ids, schema_name, table_name, column_suffix, None)]
+                    
                         
                 t0 = time()
                 n_processed = 0
@@ -1082,94 +940,85 @@ def main():
         
     ## Add soil information to the database
     t0 = time()
-    unprocessed_basin_ids = get_unprocessed_attribute_rows(soil_attributes, 'soil')
-    # randomly shuffle the ids so we split up ordered clusters of large basins
-    random.shuffle(unprocessed_basin_ids)
-    t1 = time()
-    print(f'    Unprocessed soil ID query time = {t1-t0:.1f}s for {len(unprocessed_basin_ids)} rows')
-
-    if (len(unprocessed_basin_ids) > 0) & process_glhymps:
-        # basin_geometry_check = check_for_basin_geometry(soil_ids)
-        # soil_table = f'{schema_name}.glhymps'
-        # basin_geom_table = f'{schema_name}.basin_attributes'
-        # reduce the batch size if RAM is limited (1000 is too big for 128GB RAM)
-        # 10 rows appears to use about (50GB of RAM -- verify??)
-        soil_batch_size = 100
-        if len(unprocessed_basin_ids) > soil_batch_size:
-            
-            n_batches = int(len(unprocessed_basin_ids) / soil_batch_size)
-            batches = np.array_split(unprocessed_basin_ids, n_batches)
-
-            # get a dataframe of basins by id
-            # input_data = [(e['id'], e['basin']) for e in basin_batch.iterrows()]
-            input_data = batches
-            # input_data = [(soil_table, basin_geom_table, id_batch) for id_batch in batches]
-
-        else:
-            n_batches = 1
-            input_data = [unprocessed_basin_ids]
+    unprocessed = []
+    region = None
+    if process_glhymps:
+        for p in soil_attributes:
+            unprocessed += get_unprocessed_attribute_rows(p, region)
+    
+        unprocessed_basin_ids = list(set(unprocessed))
         
-        n = 0
-        print(f'    Processing {n_batches} soil batches, {soil_batch_size} basins/batch')
-        uts = []
-        for id_batch in input_data:
-            n += 1
-            t1 = time()
+        # randomly shuffle the ids so we split up ordered clusters of large basins
+        random.shuffle(unprocessed_basin_ids)
+        t1 = time()
+        print(f'    Unprocessed soil ID query time = {t1-t0:.1f}s for {len(unprocessed_basin_ids)} rows')
+
+        if (len(unprocessed_basin_ids) > 0):
+            # basin_geometry_check = check_for_basin_geometry(soil_ids)
+            # soil_table = f'{schema_name}.glhymps'
+            # basin_geom_table = f'{schema_name}.basin_attributes'
+            # reduce the batch size if RAM is limited (1000 is too big for 128GB RAM)
+            # 10 rows appears to use about (50GB of RAM -- verify??)
+            soil_batch_size = 100
+            if len(unprocessed_basin_ids) > soil_batch_size:
+                
+                n_batches = int(len(unprocessed_basin_ids) / soil_batch_size)
+                batches = np.array_split(unprocessed_basin_ids, n_batches)
+
+                # get a dataframe of basins by id
+                # input_data = [(e['id'], e['basin']) for e in basin_batch.iterrows()]
+                input_data = batches
+                # input_data = [(soil_table, basin_geom_table, id_batch) for id_batch in batches]
+
+            else:
+                n_batches = 1
+                input_data = [unprocessed_basin_ids]
             
-            df = process_glhymps_by_basin_batch(id_batch)
-            update_database(df, schema_name, 'basin_attributes')
-            t2 = time()
-            ut = len(id_batch) / (t2-t1)
-            uts.append(ut)
-            mean_ut = np.mean(uts)
-            print(f'  Time to process batch {n}/{n_batches}: {t2-t1:.1f}s ({mean_ut:.1f} basins/s)')
+            n = 0
+            print(f'    Processing {n_batches} soil batches, {soil_batch_size} basins/batch')
+            uts = []
+            for id_batch in input_data:
+                n += 1
+                t1 = time()
+                
+                df = process_glhymps_by_basin_batch(id_batch)
+                print(df.head())
+                print(asfasd)
+                update_database(df, schema_name, 'basin_attributes')
+                t2 = time()
+                ut = len(id_batch) / (t2-t1)
+                uts.append(ut)
+                mean_ut = np.mean(uts)
+                print(f'  Time to process batch {n}/{n_batches}: {t2-t1:.1f}s ({mean_ut:.1f} basins/s)')
 
     
     ## Add climate data to the database
-    daymet_table = f'daymet'
+    if process_daymet:
+        region = None
+        for param in ['high_prcp_freq', 'low_prcp_freq']:#daymet_params:
+            daymet_ids = get_unprocessed_attribute_rows(param, region)
+            if len(daymet_ids) > 0:
+                # basin_geometry_check = check_for_basin_geometry(daymet_ids)
+                print(f'    Processing {len(daymet_ids)} climate index rows.')
+                rows_per_batch = 500
+                table_name = f'daymet_{param}'
+                column_suffix = ''
+                if len(daymet_ids) > rows_per_batch:
+                    n_iterations = int(len(daymet_ids) / rows_per_batch) 
+                    batches = np.array_split(daymet_ids, n_iterations)
+                    input_data = [(param, id_list, schema_name, table_name, column_suffix, param) for id_list in batches]
+                else:
+                    n_iterations = 1
+                    input_data = [(param, daymet_ids, schema_name, table_name, column_suffix, param)]
+                        
+                t0 = time()
+                n_processed = 0
+                with mp.Pool() as p:
+                    n_processed = p.map(process_raster, input_data)
+                t1 = time()
+                t_hr = (t1-t0) / 3600
+                print(f'    Processed {int(rows_per_batch)} daymet batches in {t_hr:.2f}h ({sum(n_processed)} rows)')
 
-    for param in daymet_params:
-        daymet_ids = get_unprocessed_attribute_rows(daymet_params, param)
-        
-        if len(daymet_ids) > 0:
-            basin_geometry_check = check_for_basin_geometry(daymet_ids)
-            print(f'    Processing {len(daymet_ids)} climate index rows.')
-            rows_per_batch = 50
-            table_name = f'daymet_{param}'
-            column_suffix = ''
-            if len(daymet_ids) > rows_per_batch:
-                n_iterations = int(len(daymet_ids) / rows_per_batch) 
-                batches = np.array_split(daymet_ids, n_iterations)
-                input_data = [(param, id_list, schema_name, table_name, column_suffix) for id_list in batches]
-            else:
-                n_iterations = 1
-                input_data = [(param, daymet_ids, schema_name, table_name, column_suffix)]
-                    
-            t0 = time()
-            n_processed = 0
-            with mp.Pool() as p:
-                n_processed = p.map(process_raster, input_data)
-            t1 = time()
-            t_hr = (t1-t0) / 3600
-            print(f'    Processed {int(rows_per_batch)} daymet batches in {t_hr:.2f}h ({sum(n_processed)} rows)')
-
-    
-    # add HYSETS station data to the database
-    hysets_table_name = 'hysets_basins'
-    hysets_table_exists = check_if_table_exists(hysets_table_name)
-    hysets_fpath = os.path.join(DATA_DIR, 'HYSETS_data/HYSETS_watershed_properties_BCUB.geojson')
-    hysets_df = gpd.read_file(hysets_fpath)
-    if not hysets_table_exists:        
-        # remove punctuation marks from column data
-        hysets_df['Name'] = hysets_df['Name'].apply(lambda x: re.sub(r'[^\w\s]', '', x))
-        hysets_df = create_hysets_table(hysets_df, hysets_table_name)
-    
-    hysets_spatial_index = 'hysets_centroid_idx'
-    # check if the index exists
-    hysets_index_exists = check_spatial_index(hysets_table_name, hysets_spatial_index, schema_name)
-    if not hysets_index_exists:
-        # add a spatial index to the basin centroid points
-        create_spatial_index(schema_name, hysets_table_name, 'centroid', hysets_spatial_index)
 
     tbb = time()
     print(f'Finished postgis database extension in {tbb - taa:.2f} seconds.')

@@ -448,6 +448,7 @@ def main():
 
             # extract terrain attributes
             assert batch_gdf.crs.to_epsg() == region_raster_crs; 'Batch gdf crs does not match region raster crs.'
+            
             terrain_results = process_dem_by_basin(region, batch_gdf, region_raster_crs, 
                                                      region_raster_fpath, temp_folder, n_procs)
             
@@ -469,7 +470,6 @@ def main():
             clean_up_temp_files(temp_folder, batch_rasters)
                     
         merged_basins = bpf.merge_geojson_files(batch_output_files, output_fpath, output_polygon_folder)
-        
         
         # save the results to a parquet file containing geometry
         convert_to_parquet(merged_basins, output_fpath)

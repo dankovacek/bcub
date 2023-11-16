@@ -9,9 +9,7 @@ import numpy as np
 import geopandas as gpd
 import multiprocessing as mp
 import xarray as xr
-
-
-import basin_processing_functions as bpf
+import rioxarray as rxr
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEM_folder = os.path.join(BASE_DIR, 'processed_data/processed_dem/')
@@ -23,10 +21,10 @@ region_codes = sorted(list(set([e.split('_')[0] for e in region_files])))
 #########################
 daymet_tile_dir = os.path.join(BASE_DIR, 'input_data/DAYMET/')
 daymet_output_dir = os.path.join(BASE_DIR, 'processed_data/DAYMET/')
+daymet_temp_folder = os.path.join(daymet_output_dir, f'temp')
 
 # i'm using a temp folder on an external SSD because the dataset is huge
-daymet_tile_dir = '/media/danbot/Samsung_T51/large_sample_hydrology/common_data/DAYMET'
-daymet_tile_dir = '/media/danbot/2023_1TB_T7'
+daymet_tile_dir = '/media/danbot2/2023_1TB_T7'
 daymet_proj = '+proj=lcc +lat_1=25 +lat_2=60 +lat_0=42.5 +lon_0=-100 +x_0=0 +y_0=0 +ellps=WGS84 +units=m +no_defs'
 
 daymet_tile_index_path = os.path.join(BASE_DIR, 'input_data/DAYMET/Daymet_v4_Tiles.geojson')
@@ -114,17 +112,19 @@ def resample_annual(param, tid, output_fpath):
     ds = ds.rio.write_crs(daymet_proj)
     
     if param in ['prcp']:
-        ds = ds.resample(time='1y').sum(keep_attrs=True, skipna=False)
+        # the mean daily precip will be computed below
+        pass        
     elif param == 'swe':
         # HYSETS uses average annual maximum
         ds = ds.resample(time='1y').max(keep_attrs=True)
     else:
         ds = ds.resample(time='1y').mean(keep_attrs=True)
 
-    annual_mean = ds.mean('time', keep_attrs=True)
-    annual_mean.rio.write_crs(daymet_proj)
-    annual_mean.rio.write_nodata(np.nan, inplace=True)
-    annual_mean.rio.to_raster(output_fpath)
+    param_mean = ds.mean('time', keep_attrs=True)
+    param_mean.rio.write_crs(daymet_proj)
+    param_mean.rio.write_nodata(np.nan, inplace=True)
+    param_mean.rio.to_raster(output_fpath)
+    del ds
     return True
 
 
@@ -141,73 +141,6 @@ def retrieve_tiles_by_id(param, tid):
     t1 = time.time()
     print(f'loaded tile {tid} set in {t1-t0:.1f}s')
     return ds
-
-
-def compute_low_precip_frequency(ds, output_fpath, threshold=1.0):
-    """
-    Frequency of low precipitation days:
-        -where precipitation < 1mm/day, or
-    """
-    #  write crs BEFORE AND AFTER resampling!
-    non_nan_mask = ds.notnull()
-    # count the number of dry days in each year
-    # a dry day is one where precip = 0
-    ds = (ds < threshold).where(non_nan_mask).resample(time='1Y', keep_attrs=True).sum('time', skipna=False) / 365.0
-    ds.rio.write_nodata(np.nan, inplace=True)
-    ds = ds.rio.write_crs(daymet_proj)
-    annual_mean = ds.mean('time', keep_attrs=True, skipna=False)
-    annual_mean.rio.write_crs(daymet_proj)
-    annual_mean.rio.write_nodata(np.nan, inplace=True)
-    annual_mean.rio.to_raster(output_fpath)
-    return True
-    
-
-def consecutive_run_lengths(arr):
-    # Find the change points
-    # If any NaN values are present in the input array, return NaN
-    if np.isnan(arr).all():
-        return np.nan
-    
-    change = np.concatenate(([0], np.where(arr[:-1] != arr[1:])[0] + 1, [len(arr)]))
-    # Calculate lengths and filter by True values
-    lengths = np.diff(change)
-    true_lengths = lengths[arr[change[:-1]]]
-    
-    max_run = np.max(true_lengths) if true_lengths.size > 0 else 0
-    
-    del arr
-    del lengths
-
-    return max_run
-
-
-def compute_dry_duration(ds, output_fpath, threshold=1.0): 
-    
-    # 1. Convert to a boolean array where True indicates values below the threshold
-    nan_locations = ds.isnull().all(dim='time')
-    below_threshold = (ds < threshold)
-    below_threshold.rio.write_nodata(np.nan, inplace=True)
-    below_threshold = below_threshold.rio.write_crs(daymet_proj)
-    print('    computing longest runs...')
-    longest_runs = xr.apply_ufunc(consecutive_run_lengths, below_threshold.groupby('time.year'), 
-                                  input_core_dims=[['time']], 
-                                  vectorize=True, 
-                                  dask='parallelized', 
-                                  output_dtypes=[int])
-    print('    finished computing longest runs')
-    
-    longest_runs = longest_runs.rio.write_crs(daymet_proj)
-    # 3. Calculate the longest duration for each year
-    
-    # 4. Calculate the mean duration over all the years
-    longest_runs = longest_runs.where(~nan_locations)
-    
-    mean_longest_run = longest_runs.mean('year', skipna=False, keep_attrs=True).round(0)
-    
-    mean_longest_run.rio.write_crs(daymet_proj)
-    mean_longest_run.rio.write_nodata(np.nan, inplace=True)
-    mean_longest_run.rio.to_raster(output_fpath)
-    return True
     
 
 def create_tile_mosaic(param, output_fpath, file_pattern):
@@ -226,6 +159,7 @@ def create_tile_mosaic(param, output_fpath, file_pattern):
         os.system(warp_cmd)
         os.remove(vrt_fpath)
 
+
 region_polygon = gpd.read_file(mask_path)
 tile_ids = get_covering_daymet_tile_ids(region_polygon)
 
@@ -237,72 +171,197 @@ years = list(range(1980, 2023))
 
 all_data = []
 for param in daymet_params:
-    print(f'processing {param}')
+    mosaic_output_fpath = os.path.join(daymet_output_dir, f'{param}_mosaic_3005.tiff')
+    if os.path.exists(mosaic_output_fpath):
+        print(f'{param} mosaic file already processed.')
+        continue
     
     daymet_param_folder = os.path.join(daymet_tile_dir, param)
-    daymet_temp_folder = os.path.join(daymet_output_dir, f'temp')
     for f in [daymet_param_folder, daymet_temp_folder]:
         if not os.path.exists(f):
             os.makedirs(f)
     
+    # download_daymet_tiles(param, years)   
     
-    download_daymet_tiles(param, years)
-    
-        
     for tid in tile_ids:
-        output_fpath = os.path.join(daymet_temp_folder, f'{tid}_{param}_mean_annual.tiff')
-        dry_days_output_fpath = os.path.join(daymet_temp_folder, f'{tid}_{param}_dry_days_mean_annual.tiff')
-        dry_duration_output_fpath = os.path.join(daymet_temp_folder, f'{tid}_{param}_dry_duration_mean_annual.tiff')
+        output_fpath = os.path.join(daymet_temp_folder, f'{tid}_{param}_mean_annual.tiff')        
+        if not os.path.exists(output_fpath):
+            data = retrieve_tiles_by_id(param, tid)
+            try:
+                # compute mean annual values for each tile and save to a tiff
+                resample_annual(param, tid, output_fpath)
+            except Exception as ex:
+                print(f'Resampling failed on {param} tile id: {tid}')
+                print(ex)
+                print('')
+                # continue
         
-        if os.path.exists(dry_days_output_fpath) & os.path.exists(dry_duration_output_fpath):
-            print(f'tile id {tid} already processed.')
-            continue
-        
-        # os.path.exists(output_fpath) & 
-        
-        data = retrieve_tiles_by_id(param, tid)
-        
-        # if not os.path.exists(output_fpath):
-        #     try:
-        #         resample_annual(data.copy(), tid, output_fpath)
-        #     except Exception as ex:
-        #         print(f'Resampling failed on {param} tile id: {tid}')
-        #         print(ex)
-        #         print('')
-        #         # continue            
+    
+    file_pattern = f'*_{param}_mean_annual.tiff'
+    create_tile_mosaic(param, mosaic_output_fpath, file_pattern)
+    
+    # delete temp files
+    # for f in os.listdir(daymet_temp_folder):
+    #     os.remove(os.path.join(daymet_temp_folder, f))
 
-        if param == 'prcp':
-            if not os.path.exists(dry_days_output_fpath):
-                # compute the P(dry_days)
-                print(f'   Computing P(dry days) on {tid}')
-                compute_low_precip_frequency(data, dry_days_output_fpath)
-                # pass
-            if not os.path.exists(dry_duration_output_fpath):
-                print(f'   Computing max dry duration on {tid}')
-                # compute the longest dry period of each year and compute the mean annual
-                compute_dry_duration(data, dry_duration_output_fpath)
+#####
+#
+#  To extend the DAYMET dataset to add computed parameters, 
+#  follow the examples below
+#
+#####
+def compute_low_precip_frequency(ds, output_fpath, threshold=1.0):
+    """
+    Frequency of low precipitation days:
+        -where precipitation < 1mm/day, or
+    """
+    #  write crs BEFORE AND AFTER resampling!
+    non_nan_mask = ds.notnull()
+    # count the number of dry days in each year
+    # a dry day is one where precip = 0
+    ds = (ds < threshold).where(non_nan_mask).resample(time='1Y', keep_attrs=True).sum('time', skipna=False) / 365.0
+    ds.rio.write_nodata(np.nan, inplace=True)
+    ds = ds.rio.write_crs(daymet_proj)
+    del non_nan_mask
+    mean = ds.mean('time', keep_attrs=True, skipna=False)
+    mean.rio.write_crs(daymet_proj)
+    mean.rio.write_nodata(np.nan, inplace=True)
+    mean.rio.to_raster(output_fpath)
+    return True
+
+
+def consecutive_run_lengths(ds):
+    # Find the change points
+    # If any NaN values are present in the input array, return NaN
+    if np.isnan(ds).all():
+        return np.nan
+    
+    change = np.concatenate(([0], np.where(ds[:-1] != ds[1:])[0] + 1, [len(ds)]))
+    # Calculate lengths and filter by True values
+    lengths = np.diff(change)
+    true_lengths = lengths[ds[change[:-1]]]
+    # max_run = np.max(true_lengths) if true_lengths.size > 0 else 0
+    mean_run = np.mean(true_lengths) if true_lengths.size > 0 else 0
+    
+    del ds
+    del lengths
+
+    return mean_run
+
+
+def compute_low_prcp_duration(ds, output_fpath, threshold=1.0):
+    # 1. Convert to a boolean array where True indicates values below the threshold
+    nan_locations = ds.isnull().all(dim='time')
+    below_threshold = (ds < threshold)
+    below_threshold.rio.write_nodata(np.nan, inplace=True)
+    below_threshold = below_threshold.rio.write_crs(daymet_proj)
+    longest_runs = xr.apply_ufunc(consecutive_run_lengths, below_threshold.groupby('time.year'), 
+                                  input_core_dims=[['time']], 
+                                  vectorize=True, 
+                                  dask='parallelized', 
+                                  output_dtypes=[int])
+    print('    finished computing longest runs')
+    
+    longest_runs = longest_runs.rio.write_crs(daymet_proj)
+    # 3. Calculate the longest duration for each year
+    
+    # 4. Calculate the mean duration over all the years
+    longest_runs = longest_runs.where(~nan_locations)
+    
+    mean_longest_run = longest_runs.mean('year', skipna=False, keep_attrs=True).round(1)
+    
+    mean_longest_run.rio.write_crs(daymet_proj)
+    mean_longest_run.rio.write_nodata(np.nan, inplace=True)
+    mean_longest_run.rio.to_raster(output_fpath)
+    return True
+
+
+def compute_high_precip_frequency(ds, output_fpath, threshold=5.0):
+    # load the mean annual precip raster
+    non_nan_mask = ds.notnull()
+    # count the number of dry days in each year
+    # a dry day is one where precip = 0
+    mean = ds.mean('time', keep_attrs=True, skipna=False)
+    n_days = ds.time.size
+
+    # find the frequency of days where the precip is greater than 5 x mean annual precip
+    # by pixel-wise comparison, and divide by the length of the time dimension
+    ds = (ds >= threshold * mean).where(non_nan_mask).sum('time', skipna=False) / n_days
+    ds.rio.write_nodata(np.nan, inplace=True)
+    ds = ds.rio.write_crs(daymet_proj)
+    ds.rio.to_raster(output_fpath)
+    del non_nan_mask
+    del mean
+    del ds
+    return True
+    
+
+def compute_high_precip_duration(ds, output_fpath, threshold=5.0):
+    # 1. Convert to a boolean array where True indicates values below the threshold
+    # non_nan_mask = ds.notnull()
+    mean = ds.mean('time', keep_attrs=True, skipna=False)
+    
+    above_threshold = (ds >= threshold * mean)
+    nan_locations = ds.isnull().all(dim='time')
+    del ds
+    above_threshold.rio.write_nodata(np.nan, inplace=True)
+    above_threshold = above_threshold.rio.write_crs(daymet_proj)
+    print('    computing longest runs...')
+    # 3. Calculate the duration of consecutive days >= 5x threshold
+    longest_runs = xr.apply_ufunc(consecutive_run_lengths, above_threshold.groupby('time.year'), 
+                                  input_core_dims=[['time']], 
+                                  vectorize=True, 
+                                  dask='parallelized', 
+                                  output_dtypes=[int])
+    print('    finished computing longest runs')
+    del above_threshold
+
+    longest_runs = longest_runs.rio.write_crs(daymet_proj)
+    
+    longest_runs = longest_runs.where(~nan_locations)    
+    mean_longest_run = longest_runs.mean('year', skipna=False, keep_attrs=True).round(1)
+    mean_longest_run.rio.write_crs(daymet_proj)
+    mean_longest_run.rio.write_nodata(np.nan, inplace=True)
+    mean_longest_run.rio.to_raster(output_fpath)
+    return True
+
+
+def set_computation_by_param(tid, param, output_fpath):
+        # retrieve the precipitation data to compute statistics
+        data = retrieve_tiles_by_id('prcp', tid)
+        if param == 'low_prcp_freq':
+            print(f'   Computing P(p<1mm) on {tid}')
+            completed = compute_low_precip_frequency(data, output_fpath)
+        elif param == 'low_prcp_duration':
+            print(f'   Computing mean low precip duration')
+            completed = compute_low_prcp_duration(data, output_fpath)
+        elif param == 'high_prcp_freq':
+            print(f'   Computing P(p >= 5 x mean annual)')
+            completed = compute_high_precip_frequency(data, output_fpath)
+        elif param == 'high_prcp_duration':
+            print(f'   Computing mean high precip duration')
+            completed = compute_high_precip_duration(data, output_fpath)
+        else:
+            print(f'No function set for processing parameter {param}')
+            pass
         del data
-            
-    dry_days_mosaic_fpath = os.path.join(daymet_output_dir, f'{param}_dry_days_mosaic_3005.tiff')
-    dry_duration_mosaic_fpath = os.path.join(daymet_output_dir, f'{param}_dry_duration_mosaic_3005.tiff')
-    for f in [dry_duration_mosaic_fpath, dry_days_mosaic_fpath]:
-        if not os.path.exists(f):
-            base_string = f.split('/')[-1]
-            if 'dry_days' in base_string:
-                mosaic_param = f'{param}_dry_days'
-                file_pattern = f'*_{param}_dry_days_mean_annual.tiff'
-            elif 'dry_duration' in base_string:
-                mosaic_param = f'{param}_dry_duration'
-                file_pattern = f'*_{param}_dry_duration_mean_annual.tiff'
-            else:
-                mosaic_param = param
-                file_pattern = f'*_{param}_mean_annual.tiff'
-            
-            create_tile_mosaic(mosaic_param, f, file_pattern)
+        return completed
 
+
+# compute low and high precip event frequency and duration
+for param in ['high_prcp_freq','low_prcp_freq', 'high_prcp_duration', 'low_prcp_duration']:
+    output_fpath = os.path.join(daymet_output_dir, f'{param}_mosaic_3005.tiff')
     if os.path.exists(output_fpath):
-        # delete temp files
-        pass
-        # for f in os.listdir(daymet_temp_folder):
-        #     os.remove(os.path.join(daymet_temp_folder, f))
-    print(asfasd)
+        print(f'{param} mosaic file already processed.')
+        continue
+    for tid in tile_ids:
+        print(f'Processing tile id {tid}.')
+        mean_annual_fpath = os.path.join(daymet_temp_folder, f'{tid}_{param}_mean_annual.tiff')
+        if os.path.exists(mean_annual_fpath):
+            print(f'   ...tile id {tid} already processed.')
+        else:
+            tiles_processed = set_computation_by_param(tid, param, mean_annual_fpath)
+            print(f'   ...finished processing mean annual {param} for tile id {tid}.')
+    
+    file_pattern = f'*_{param}_mean_annual.tiff'
+    create_tile_mosaic(param, output_fpath, file_pattern)
