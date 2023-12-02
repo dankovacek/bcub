@@ -6,6 +6,9 @@ import os
 from time import time
 import pandas as pd
 
+import warnings
+warnings.filterwarnings('ignore')
+
 # from dask import dataframe as dd
 # import multiprocessing as mp
 
@@ -234,7 +237,7 @@ def convert_parquet_to_postgis_db(parquet_dir, db_host, db_name, db_user, db_pas
     # '08F', 'FRA', 'WWA', 'HAY', '08G', '10E',
     #  'CLR', 'PCR','YKR', 'ERK', '08B', '08E', 'LRD]
     
-    region_codes = ['10E']#sorted(os.listdir(parquet_dir))
+    region_codes = sorted(os.listdir(parquet_dir))
     
     for rc in region_codes:
         
@@ -257,7 +260,7 @@ def convert_parquet_to_postgis_db(parquet_dir, db_host, db_name, db_user, db_pas
         
         geometry_cols = [c for c in df.columns if 'geometry' in c]
         non_geo_cols = [c for c in df.columns if 'geometry' not in c]
-        
+                
         df = check_polygon_flags(df)
           
         if len(non_geo_cols) > len(set(non_geo_cols)):

@@ -16,12 +16,13 @@ input_data/NALCMS/*
 input_data/GLHYMPS/*
 processed_data/basin_attributes/
 processed_data/DAYMET/
+processed_data/BCUB_files/
 processed_data/basin_properties/
 processed_data/pour_points/*
 processed_data/derived_basins/
 processed_data/processed_dem/
 processed_data/*.vrt
-processed_data/fix_parquet_files.py
+processed_data/*.py
 results/
 superseded/
 *.qgz

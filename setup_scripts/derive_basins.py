@@ -294,8 +294,9 @@ def filter_processed_pts(region, ppt_gdf):
     print(f'    {len(filtered_gdf)} pour points have not been processed, dropping {n_ppts - n_processed} duplicates.')
     return filtered_gdf
 
+
 region_codes = [
-    # 'HGW',
+    'HGW',
     # 'VCI',
     # 'WWA', 
     # '08C', 
@@ -306,7 +307,6 @@ region_codes = [
     # '08C', '10E', 
     # 'ERK', 'HAY', 'YKR', 
     # 'CLR', 'PCR', 'FRA',
-    'LRD', 
     ]
 
 idx_dict = {}
@@ -341,21 +341,13 @@ def main():
 
         region_raster, region_raster_crs, _, region_raster_fpath = retrieve_raster(region)
         raster_resolution = tuple(abs(e) for e in region_raster.rio.resolution())
-        
         print(f'    {region} raster crs = {region_raster_crs}.')
           
-        # track the pour point indices:
-        #     these indices correspond to the region polygon rasters
-        #     but recall they were masked with the region polygons
-        #     using a buffer length equal to the DEM resolution
-
         # check for an output file to allow for partial updating
         # by tracking (unique) ppt indices
         output_folder = os.path.join(DATA_DIR, f'derived_basins/{region}/')        
         output_fpath = os.path.join(output_folder, f'{region}_basins.parquet')
-        # attributes_fpath = os.path.join(output_folder, f'{region}_basin_attributes.geojson')
-        # if os.path.exists(output_fpath):
-        #     continue
+
         
         # check if the ppt batches have already been created
         batch_folder = os.path.join(temp_folder, 'ppt_batches/')
