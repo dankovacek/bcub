@@ -82,13 +82,10 @@ by running the `get_3DEP_DEM.py` script saved under `setup_scripts`:
 > DEM tiles look like the following:  
 > `https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/1/TIFF/historical/n62w130/USGS_1_n62w130_20130911.tif`
 
-The .vrt mosaic created by the script will look similar to the image at
-left when viewed in QGIS or similar software. After clipping rasters and
-reassembling the resulting files to another `.vrt`, it should look like
-the image at right:
+After clipping rasters and assembling the resulting files to a virtual raster `.vrt`, it should look like the image at right:
 
 ![DEM Mosaic of BC and administrative boundary
-regions](../img/DEM_tiled_trimmed.png)
+regions](../img/overview_fig.png)
 
 > **Note**<br> The set of covering DEM tiles can be customized using the
 > tile index accessible at [USGS.gov The National Map Data
@@ -128,7 +125,7 @@ Merging the region polygons is done by the following script:
 
 > `$ python merge_region_polygons.py`
 
-![Merging process for complete sub-regions.](../img/merging_regions.png)
+![Merging process for complete sub-regions.](../img/hydrobasins_and_BCUB_subregions.png)
 
 > :warning: **Sub-region naming does not perfectly follow the NHN WUL
 > naming convention.**
