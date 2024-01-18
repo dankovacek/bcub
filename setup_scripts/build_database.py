@@ -154,21 +154,16 @@ def get_ppt_count(region):
 
 
 # @delayed
-def load_file_dgp(filename, schema):
+def load_file_dgp(filepath, schema):
     t0 = time()
-    # df = dgp.read_parquet(filename, 
-    #                       calculate_divisions=True,
-    #                       schema=schema 
-    #                       )
-    df = gpd.read_parquet(filename, schema=schema)
+    df = gpd.read_parquet(filepath, schema=schema)
     # df = df.repartition(npartitions=nparts)
     # replace nan with None
     df = df.replace(to_replace=np.nan, value=None)
     
     # drop the id, fid, and object_id columns
     drop_cols = [e for e in ['ID', 'FID', 'object_id'] if e in df.columns]
-    df = df.drop(labels=drop_cols, axis=1)
-    
+    df = df.drop(labels=drop_cols, axis=1)    
     return df
 
 
@@ -211,7 +206,7 @@ def convert_parquet_to_postgis_db(parquet_dir, db_host, db_name, db_user, db_pas
     # connect to the PostGIS database    
     db_initialized, _ = test_query(schema_name, db_host, db_name, db_user, db_password)
     print(f'     ...the database is initialized: {db_initialized}')
-    test_dir = os.path.join(parquet_dir, 'VCI')
+    test_dir = os.path.join(parquet_dir, 'VCI')    
     if not os.path.exists(test_dir):
         raise Exception(f'No parquet files found in {parquet_dir}.  derive_basins.py must be run first.')
     test_file = [e for e in os.listdir(test_dir) if e.endswith('.parquet')]
@@ -238,6 +233,7 @@ def convert_parquet_to_postgis_db(parquet_dir, db_host, db_name, db_user, db_pas
     #  'CLR', 'PCR','YKR', 'ERK', '08B', '08E', 'LRD]
     
     region_codes = sorted(os.listdir(parquet_dir))
+    region_codes = ['HGW', 'VCI']
     
     for rc in region_codes:
         
@@ -258,6 +254,11 @@ def convert_parquet_to_postgis_db(parquet_dir, db_host, db_name, db_user, db_pas
         
         df = load_file_dgp(fpath, parquet_schema)
         
+        if ('centroid_x' not in df.columns) or ('centroid_y' not in df.columns):
+            # create two new columns for the centroid coordinates
+            df['centroid_x'] = df['centroid_geometry'].x
+            df['centroid_y'] = df['centroid_geometry'].y
+                
         geometry_cols = [c for c in df.columns if 'geometry' in c]
         non_geo_cols = [c for c in df.columns if 'geometry' not in c]
                 

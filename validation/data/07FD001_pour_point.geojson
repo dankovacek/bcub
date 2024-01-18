@@ -1,0 +1,7 @@
+{
+"type": "FeatureCollection",
+"crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:EPSG::3005" } },
+"features": [
+{ "type": "Feature", "properties": { "StationNum": "07FD001", "NameNom": "KISKATINAW RIVER NEAR FARMINGTON", "Status": "active", "Etat": "en service", "ProvTerr": "BC" }, "geometry": { "type": "Point", "coordinates": [ 1338361.805467632599175, 1231094.707068111049011 ] } }
+]
+}

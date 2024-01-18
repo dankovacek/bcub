@@ -317,7 +317,7 @@ def main():
     min_basin_area = 1.0 # km^2
     rn = 0
     n_processed_basins = 0
-    for region in region_codes:
+    for region in ['HGW', 'VCI']:#region_codes:
         t0 = time.time()
         rn += 1
         idx_dict[region] = {}

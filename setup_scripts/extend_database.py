@@ -19,7 +19,7 @@ import geopandas as gpd
 # both of these steps require multiple days to process
 process_nalcms = False
 process_glhymps = False
-process_daymet = False
+process_daymet = True
 
 conn_params = {
     'dbname': 'basins',
@@ -199,7 +199,7 @@ def get_unprocessed_attribute_rows(column, region=None):
 
     id_query = f"""
     SELECT id, region_code FROM basins_schema.basin_attributes 
-    WHERE ({column} IS NULL OR {column} != {column}) """
+    WHERE ({column} IS NULL OR {column} != {column})"""
     # for c in columns[1:]:
     #     id_query += f"OR ({c} IS NULL OR {c} != {c}) "
     
@@ -210,9 +210,7 @@ def get_unprocessed_attribute_rows(column, region=None):
     cur.execute(id_query)
     results = cur.fetchall()
     df = pd.DataFrame(results, columns=['id', 'region_code'])
-    # groups = df.groupby('region_code').count()
-    # print(groups)
-    return df['id'].values
+    return list(df['id'].values)
 
 
 def create_raster_table(schema_name, raster_fpath, table_name):
@@ -286,31 +284,28 @@ def update_database(new_data, schema_name, table_name, column_suffix=""):
     
     # update the database with the new land use data
     # ids = tuple([int(e) for e in new_data['id'].values])
+    
     data_tuples = list(new_data.itertuples(index=False, name=None))
     
     cols = new_data.columns.tolist()
     set_string = ', '.join([f"{e}{column_suffix} = data.v{j}" for e,j in zip(cols[1:], range(1,len(cols[1:])+1))])
     v_string = ', '.join([f"v{e}" for e in range(1,len(cols[1:])+1)])
-    
     query = f"""
     UPDATE {schema_name}.{table_name} AS basin_tab
         SET {set_string}
         FROM (VALUES %s) AS data(id, {v_string})
     WHERE basin_tab.id = data.id;
     """
+
     t0 = time()
-    with warnings.catch_warnings():
-        # ignore warning for non-SQLAlchemy Connecton
-        # see github.com/pandas-dev/pandas/issues/45660
-        warnings.simplefilter('ignore', UserWarning)
-        with psycopg2.connect(**conn_params) as conn:
-            with conn.cursor() as cur:
-                extras.execute_values(cur, query, data_tuples)
-                # commit the changes
-                conn.commit()
-    t1 = time()
-    ut = len(data_tuples) / (t1-t0)
-    # print(f'    {t1-t0:.1f}s to update {len(data_tuples)} polygons ({ut:.1f}/second)')
+    with psycopg2.connect(**conn_params) as conn:
+        with conn.cursor() as cur:
+            extras.execute_values(cur, query, data_tuples)
+            # commit the changes
+            conn.commit()
+            t1 = time()
+            ut = len(data_tuples) / (t1-t0)
+            print(f'    {t1-t0:.1f}s to update {len(data_tuples)} polygons ({ut:.1f}/second)')
 
 
 def clip_nalcms_raster_values_by_polygon(raster_table, basin_geom_table, id_list):
@@ -448,9 +443,8 @@ def reformat_daymet_result(results, param, basin_geom_table, raster_table):
         df[param] = (df[param] * 100.0).round(0)
     if param == 'prcp':
         df[param] = df[param].round(0).astype(int)
-    
+    df.set_index('id', inplace=True)
     return df
-
 
 
 def clip_daymet_values_by_polygon(raster_table, basin_geom_table, id_list, param):
@@ -522,11 +516,8 @@ def process_raster(inputs):
     ut =  len(id_list) / sum(times)
     # sort by id
     df.sort_index(inplace=True)
-    df = df.reset_index(drop=True)
-    update_database(df, schema_name, 'basin_attributes', column_suffix=column_suffix)
-    print(f'    Average time to process {len(id_list)} basins for {raster_set} daymet data: {ut:.2f}basins/s')
-    # return df
-    return len(id_list)
+    df = df.reset_index(drop=False) 
+    return df
 
 
 def averaging_functions(group):
@@ -907,6 +898,7 @@ def main():
     add_table_columns(schema_name, new_cols)
 
     ## Add land cover data to the database
+    region = 'HGW'
     region = None
     if process_nalcms:
         for raster_set in [2010, 2015, 2020]:
@@ -918,8 +910,8 @@ def main():
             table_name = f'nalcms_{raster_set}'
             if len(nalcms_ids) > 0:
                 # basin_geometry_check = check_for_basin_geometry(nalcms_ids)
-                print(f'    Processing {len(nalcms_ids)} land cover rows.')
-                rows_per_batch = 20
+                print(f'    Processing {len(nalcms_ids)} {raster_set} land cover rows.')
+                rows_per_batch = 5000
                 column_suffix = f'_{raster_set}'
                 if len(nalcms_ids) > rows_per_batch:
                     n_iterations = int(len(nalcms_ids) / rows_per_batch) 
@@ -928,20 +920,22 @@ def main():
                 else:
                     n_iterations = 1
                     input_data = [(raster_set, nalcms_ids, schema_name, table_name, column_suffix, None)]
-                    
                         
                 t0 = time()
-                n_processed = 0
                 with mp.Pool() as p:
-                    n_processed = p.map(process_raster, input_data)
+                    all_dfs = p.map(process_raster, input_data)
+               
+                nalcms_df = pd.concat(all_dfs)
+                update_database(nalcms_df, schema_name, 'basin_attributes', column_suffix=column_suffix)
                 t1 = time()
                 t_hr = (t1-t0) / 3600
-                print(f'    Processed {int(rows_per_batch)} batches in {t_hr:.2f}h ({sum(n_processed)} rows)')
-        
+                print(f'    Processed {int(rows_per_batch)} batches in {t_hr:.2f}h ({len(nalcms_df)} rows)')
+            else:
+                print(f'    No {raster_set} land cover rows to process.')
     ## Add soil information to the database
     t0 = time()
     unprocessed = []
-    region = None
+    # region = None
     if process_glhymps:
         for p in soil_attributes:
             unprocessed += get_unprocessed_attribute_rows(p, region)
@@ -959,7 +953,7 @@ def main():
             # basin_geom_table = f'{schema_name}.basin_attributes'
             # reduce the batch size if RAM is limited (1000 is too big for 128GB RAM)
             # 10 rows appears to use about (50GB of RAM -- verify??)
-            soil_batch_size = 100
+            soil_batch_size = 1000
             if len(unprocessed_basin_ids) > soil_batch_size:
                 
                 n_batches = int(len(unprocessed_basin_ids) / soil_batch_size)
@@ -982,8 +976,6 @@ def main():
                 t1 = time()
                 
                 df = process_glhymps_by_basin_batch(id_batch)
-                print(df.head())
-                print(asfasd)
                 update_database(df, schema_name, 'basin_attributes')
                 t2 = time()
                 ut = len(id_batch) / (t2-t1)
@@ -994,13 +986,14 @@ def main():
     
     ## Add climate data to the database
     if process_daymet:
-        region = None
-        for param in ['high_prcp_freq', 'low_prcp_freq']:#daymet_params:
+        # region = None
+        for param in daymet_params:#['high_prcp_freq', 'low_prcp_freq']:#daymet_params:
             daymet_ids = get_unprocessed_attribute_rows(param, region)
+            print(f' Processing {len(daymet_ids)} Daymet {param} rows.')
             if len(daymet_ids) > 0:
                 # basin_geometry_check = check_for_basin_geometry(daymet_ids)
                 print(f'    Processing {len(daymet_ids)} climate index rows.')
-                rows_per_batch = 500
+                rows_per_batch = 5000
                 table_name = f'daymet_{param}'
                 column_suffix = ''
                 if len(daymet_ids) > rows_per_batch:
@@ -1014,10 +1007,14 @@ def main():
                 t0 = time()
                 n_processed = 0
                 with mp.Pool() as p:
-                    n_processed = p.map(process_raster, input_data)
+                    daymet_results = p.map(process_raster, input_data)
+                
+                daymet_df = pd.concat(daymet_results)
+
+                update_database(daymet_df, schema_name, 'basin_attributes', column_suffix=column_suffix)
                 t1 = time()
                 t_hr = (t1-t0) / 3600
-                print(f'    Processed {int(rows_per_batch)} daymet batches in {t_hr:.2f}h ({sum(n_processed)} rows)')
+                print(f'    Processed {len(input_data)} daymet batches in {t_hr:.2f}h ({len(daymet_df)} rows)')
 
 
     tbb = time()
