@@ -165,7 +165,7 @@ tile_ids = get_covering_daymet_tile_ids(region_polygon)
 
 # completed 
 # ['srad', 'swe', 'tmax', 'tmin', 'vp']
-daymet_params = ['prcp']
+daymet_params = ['prcp', 'srad', 'swe', 'tmax', 'tmin', 'vp']
 
 years = list(range(1980, 2023))
 

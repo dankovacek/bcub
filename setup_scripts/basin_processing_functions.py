@@ -1,23 +1,28 @@
 import os
-
-from shapely.validation import make_valid
-
+from time import time
 import pandas as pd
+import requests
 import numpy as np
 os.environ['USE_PYGEOS'] = '0'
+
 import geopandas as gpd
 import rioxarray as rxr
 from scipy.stats.mstats import gmean
+from shapely.geometry import Polygon    
+from shapely.validation import make_valid
 
 from whitebox.whitebox_tools import WhiteboxTools
 
 wbt = WhiteboxTools()
-wbt.verbose = False
+# wbt.verbose = False
+wbt.set_verbose_mode(False)
+
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 def retrieve_raster(fpath):
     rds = rxr.open_rasterio(fpath, masked=True, mask_and_scale=True)
     affine = rds.rio.transform()
-    return rds, rds.rio.crs, affine
+    return rds, rds.rio.crs.to_epsg(), affine
 
 
 def filter_and_explode_geoms(gdf, min_area):
@@ -27,7 +32,63 @@ def filter_and_explode_geoms(gdf, min_area):
     gdf = gdf[gdf['area'] >= min_area * 0.95]    
     return gdf
 
-                
+
+def download_file(input):
+    """
+    Download a file from a URL and save it to a local file path.
+
+    Args:
+        url (str): URL of the file to download.
+        save_path (str): Full path to where the file will be saved.
+
+    Returns:
+        bool: True if the file was downloaded and saved successfully, False otherwise.
+    """
+    url, save_path = input
+    
+
+    try:
+        # Send a GET request to the URL
+        response = requests.get(url, stream=True)
+        # Raise an exception if the request failed
+        response.raise_for_status()
+
+        # Ensure the directory exists
+        # os.makedirs(os.path.dirname(save_path), exist_ok=True)
+
+        # Open the file and write the contents in chunks
+        with open(save_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                # Filter out keep-alive new chunks
+                if chunk:
+                    f.write(chunk)
+        print(f"File downloaded successfully and saved to {save_path}")
+        return save_path
+    except requests.exceptions.RequestException as e:
+        print(f"Failed to download the file: {e}")
+        return None
+    except Exception as e:
+        print(f"An error occurred: {e}")
+        return None
+
+
+def get_crs_and_resolution(fname):
+    raster = rxr.open_rasterio(fname)
+    crs = raster.rio.crs.to_epsg()
+    res = raster.rio.resolution()   
+    return crs, res
+
+
+def fill_holes(geometries):
+    """
+    Vectorized function to close polygon holes by redefining polygons to only their exterior rings.
+    """
+    return geometries.apply(lambda p: Polygon(list(p.exterior.coords)) if p.is_valid and not p.is_empty and p.interiors else p)
+
+
+
+
+          
 def dump_poly(inputs):
     """Take the polygon batches and create raster clips with each polygon.
     Save the individual polygons as geojson files for later use.
@@ -56,17 +117,37 @@ def dump_poly(inputs):
     if not os.path.exists(fpath_out):
         # Do the actual clipping
         command = f'gdalwarp -s_srs {crs} -cutline {basin_fpath} -crop_to_cutline -multi -of gtiff {raster_fpath} {fpath_out} -wo NUM_THREADS=ALL_CPUS'
-        print('doing gdalwarp')
-        print(command)
-        print('   ...')
         os.system(command)
 
     g = None
     
     return fpath_out
 
+def check_covered_area_proportion(gdf):
+    t0 = time()
+    to_remove = []
+    for i, row in gdf.iterrows():
+        intersected = gdf[gdf['geometry'].intersects(row['geometry'])].copy()
+        intersected = intersected[intersected['id'] != row['id']]
+        if len(intersected) == 0:
+            continue
+        intersected['proportion_covered'] = intersected['geometry'].apply(
+            lambda x: x.intersection(row['geometry']).area / x.area
+        )
+        intersected = intersected[intersected['proportion_covered'] > 0.95]
+        if len(intersected) == 0:
+            continue    
+        else:
+            to_remove += intersected[intersected['area'] < row['area']]['id'].tolist()
 
-def match_ppt_to_polygons_by_order(ppt_batch_path, polygon_df, resolution):
+    filtered_gdf = gdf[~gdf['id'].isin(to_remove)]
+    
+    t1 = time()
+    print(f'    ...checked covered area proportion in {t1-t0:.2f} seconds')
+    return filtered_gdf
+
+
+def match_ppt_to_polygons_by_order(ppt_batch_path, polygon_df):
     """The WBT "unnest_basins" function does not preserve order of polygons & pour points,
     however the output contains a VALUE that can be used to match the polygon order
     with the input pour point dataframe.  This function does that matching and returns
@@ -80,22 +161,53 @@ def match_ppt_to_polygons_by_order(ppt_batch_path, polygon_df, resolution):
     Returns:
         geodataframe: geodataframe ordered by polygon VALUE to match the input pour point dataframe
     """
-    ppt_batch = gpd.read_file(ppt_batch_path)
-    try:
-        assert len(ppt_batch) == len(polygon_df)
-    except Exception as e:
-        print(f' mismatched df lengths: ppt vs. polygon_df')
-        print(len(ppt_batch), len(polygon_df))
-        print('')
-
-    polygon_df['acc_polygon'] = (polygon_df.geometry.area / (resolution[0] * resolution[1])).astype(int)
-    polygon_df['ppt_acc'] = [e if (e > 0) else None for e in ppt_batch['acc'].values.astype(int)]
     
-    # create latitude and longitude columns from the ppt_batch dataframe
+    ppt_batch = gpd.read_file(ppt_batch_path)
+    ppt_batch['id'] = ppt_batch.index.values
+    
+    if (len(ppt_batch) != len(polygon_df)):
+        print(polygon_df.columns)
+        print(len(ppt_batch), len(polygon_df))
+        raise Exception('Mismatched dataframe lengths or missing columns in ppt_batch')
+        # do an sjoin of the dataframe with itself to drop nested polygons
+        # that is, keep just the larger polygon that contains the smaller one
+        # polygon_df.to_file(os.path.join(BASE_DIR, 'processed_data/polygon_df_test_start.geojson'), driver='GeoJSON')
+        # # joined_df = gpd.sjoin(polygon_df, polygon_df.copy(), how='inner', predicate='covers', lsuffix='left', rsuffix='right')
+        # polygon_df = check_covered_area_proportion(polygon_df)
+
+
+        # # polygon_df.to_file(os.path.join(BASE_DIR, 'processed_data/joined_test33.geojson'), driver='GeoJSON')
+        
+        # print(f' mismatched df lengths: ppt ({len(ppt_batch)}) vs. polygon_df ({len(polygon_df)})')
+        
+        # ppt_batch['ppt_area'] = ppt_batch['acc'] * abs(resolution[0] * resolution[1]) / 1e6
+        # ppt_batch['ppt_lon_m_3005'] = ppt_batch['geometry'].x
+        # ppt_batch['ppt_lat_m_3005'] = ppt_batch['geometry'].y
+
+        # # add an index column to the polygon set
+        # polygon_df['basin_idx_copy'] = polygon_df.index.values
+
+        # # join the two dataframes by sjoin on the geometry
+        # joined_df = gpd.sjoin(ppt_batch, polygon_df, how='right', op='within', lsuffix='ppt', rsuffix='basin')
+        # # sort by the area of the polygon and keep just the first entry (addresses duplicates)
+
+        # joined_df = joined_df.sort_values(by='area', ascending=False)
+        # joined_df = joined_df.drop_duplicates(subset='basin_idx_copy', keep='first')
+        
+        # # drop polygons for which there is no pour point
+        # joined_df.dropna(subset=['index_ppt'], inplace=True)
+        # polygon_df.to_file(os.path.join(BASE_DIR, 'processed_data/joined_test.geojson'), driver='GeoJSON')
+        # polygon_df = joined_df.copy()
+    
     polygon_df['ppt_lon_m_3005'] = ppt_batch['geometry'].x
-    polygon_df['ppt_lat_m_3005'] = ppt_batch['geometry'].y    
+    polygon_df['ppt_lat_m_3005'] = ppt_batch['geometry'].y
+    acc_values = ppt_batch['acc'].values.astype(int)
+    polygon_df['ppt_acc'] = np.where(acc_values > 0, acc_values, None)
+    polygon_df['Perimeter_km'] = polygon_df['geometry'].length / 1E3
+    polygon_df['id'] = polygon_df.index.values
     # polygon_df.reset_index(inplace=True, drop=True)
     polygon_df['VALUE'] = polygon_df['VALUE'].astype(int)
+    polygon_df.drop(columns=['FID', 'area'], inplace=True)
     polygon_df.set_index('VALUE', inplace=True)
     polygon_df.sort_index(inplace=True)
     polygon_df.index.name = 'ID'
@@ -141,7 +253,7 @@ def check_lulc_sum(i, data):
     return lulc_check
 
 
-def recategorize_lulc(data):    
+def recategorize_lulc(data):
     forest = ('Land_Use_Forest_frac', [1, 2, 3, 4, 5, 6])
     shrub = ('Land_Use_Shrubs_frac', [7, 8, 11])
     grass = ('Land_Use_Grass_frac', [9, 10, 12, 13, 16])
@@ -299,6 +411,7 @@ def process_terrain_attributes(raster_path):
     basin_data['ID'] = basin_id
 
     _, median_el, _, _ = process_basin_elevation(raster)
+    del raster
     basin_data['Elevation_m'] = round(median_el, 1)
     
     basin_data['Aspect_deg'] = int(wbt_aspect(raster_path))
@@ -397,10 +510,10 @@ def merge_geojson_files(files, output_fpath, temp_folder):
 
     for file in files:
         fpath = os.path.join(temp_folder, file)
-        layer = gpd.read_file(fpath)
-        batch_dfs.append(layer)
+        df = gpd.read_file(fpath)
+        batch_dfs.append(df)
         
-    return gpd.GeoDataFrame(pd.concat(batch_dfs), crs=layer.crs)
+    return gpd.GeoDataFrame(pd.concat(batch_dfs), crs=df.crs)
 
 
 

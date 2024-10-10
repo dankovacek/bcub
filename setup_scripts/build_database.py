@@ -5,6 +5,7 @@ import psycopg2.extras as extras
 import os
 from time import time
 import pandas as pd
+import rioxarray as rxr
 
 import warnings
 warnings.filterwarnings('ignore')
@@ -46,33 +47,37 @@ def create_table_initialization_query(parquet_schema, schema_name, db_host, db_n
     # to fix, try switching to generic Geometry type:
     # ALTER TABLE my_table ALTER COLUMN geom TYPE geometry(Geometry,3005);
     
-    # i think postgres needs a column named geom
-
+    # Postgres needs a column named geom
     q = f'''CREATE TABLE IF NOT EXISTS {schema_name}.basin_attributes (
         id BIGSERIAL PRIMARY KEY,
         centroid geometry(POINT, 3005),
         pour_pt geometry(POINT, 3005),
         basin geometry(POLYGON, 3005),
         '''
-        
+            
     column_names = []
     column_types = []
-    for field in parquet_schema:
+    for f in parquet_schema:
         ###
         ### check if dtypes are correct!
         ####
-        if field.name not in geom_columns:
-            column_names.append(field.name)
-            column_types.append(dtype_dict[field.type])
-
+        field = f.name.lower()
+        if (field not in geom_columns) & (field not in column_names):
+            if field == 'id':
+                continue  
+            column_names.append(field)
+            column_types.append(dtype_dict[f.type])
+    
     for col, col_type in zip(column_names, column_types):
+        print(col, col_type)
         if col in ['__index_level_0__', 'ID', 'FID']:
-            continue            
+            continue
         if col not in geom_columns:
             q += f' {col} {col_type},'
             print(f'    Added column {col} of type {col_type} to table.')
             
     q = q[:-1] + ');'
+    
     cur.execute(q)
     conn.commit()
     conn.close()
@@ -123,7 +128,7 @@ def populate_table_columns(df, schema_name, geometry_cols, non_geo_cols, db_host
 def test_query(schema_name, db_host, db_name, db_user, db_password):
     conn = psycopg2.connect(host=db_host, dbname=db_name, user=db_user, password=db_password)
     q = f"select id, basin from {schema_name}.basin_attributes order by id desc limit 4"
-    
+
     try:
         test_df = gpd.read_postgis(q, conn, geom_col='basin')
     except Exception as e:
@@ -157,17 +162,22 @@ def get_ppt_count(region):
 def load_file_dgp(filepath, schema):
     t0 = time()
     df = gpd.read_parquet(filepath, schema=schema)
-    # df = df.repartition(npartitions=nparts)
+
+    # df = df.repartition(npartitions=4)
     # replace nan with None
     df = df.replace(to_replace=np.nan, value=None)
+
+    # drop the Perimeter_km column if it exists
+    if 'Perimeter_km' in df.columns:
+        df = df.drop(labels='Perimeter_km', axis=1)
     
     # drop the id, fid, and object_id columns
-    drop_cols = [e for e in ['ID', 'FID', 'object_id'] if e in df.columns]
-    df = df.drop(labels=drop_cols, axis=1)    
+    drop_cols = [e for e in ['ID', 'id', 'FID', 'object_id'] if e in df.columns]
+    df = df.drop(labels=drop_cols, axis=1)
     return df
 
 
-def reformat_geom_cols(df, geometry_cols, nparts):
+def reformat_geom_cols(df, geometry_cols):
     # encode geometries to well known binary
     for c in geometry_cols:
         df[c+'_wkb'] = df[c].to_wkb(hex=True)
@@ -178,7 +188,7 @@ def reformat_geom_cols(df, geometry_cols, nparts):
     return df
 
 
-def check_polygon_flags(df):
+def check_polygon_flags(region, df):
     """add a flag if the difference between the derived polygon area 
     and the area defined by the flow accumulation at the pour point is
     greater than 5% of the 'area' (also defined by the polygon area 
@@ -187,7 +197,17 @@ def check_polygon_flags(df):
     Args:
         df (dataframe): basin attributes dataframe
     """
-    df['FLAG_acc_match'] = ((df['ppt_acc'] - df['acc_polygon']).abs() / df['acc_polygon'] > 0.05).astype(int)
+    # get the raster file
+    raster_fname = f'{df.region_code.iloc[0]}_USGS_3DEP_3005.tif'
+    raster_path = os.path.join(data_dir, 'processed_dem', raster_fname)
+    raster = rxr.open_rasterio(raster_path, masked=True)
+    resolution = [abs(e) for e in raster.rio.resolution()]
+    
+    if 'acc_polygon' not in df.columns:
+        px_area = resolution[0] * resolution[1]
+        df['acc_polygon'] = (df['basin_geometry'].area / px_area).round(0).astype(int)
+    
+    df['FLAG_acc_match'] = ((df['ppt_acc'].astype(int) - df['acc_polygon']).abs() / df['acc_polygon'] > 0.05).astype(int)
     return df
 
 
@@ -202,16 +222,17 @@ def update_constraint(schema_name, db_host, db_name, db_user, db_password):
 
 
 def convert_parquet_to_postgis_db(parquet_dir, db_host, db_name, db_user, db_password, 
-                                     schema_name,  total_bounds):
-    # connect to the PostGIS database    
+                                     schema_name, total_bounds=None):
+    # connect to the PostGIS database
     db_initialized, _ = test_query(schema_name, db_host, db_name, db_user, db_password)
+    
     print(f'     ...the database is initialized: {db_initialized}')
     test_dir = os.path.join(parquet_dir, 'VCI')    
     if not os.path.exists(test_dir):
         raise Exception(f'No parquet files found in {parquet_dir}.  derive_basins.py must be run first.')
     test_file = [e for e in os.listdir(test_dir) if e.endswith('.parquet')]
     parquet_schema = pq.read_schema(os.path.join(test_dir, test_file[0]))
-        
+
     if not db_initialized:
 
         if len(test_file) == 0:
@@ -221,26 +242,26 @@ def convert_parquet_to_postgis_db(parquet_dir, db_host, db_name, db_user, db_pas
 
     update_constraint(schema_name, db_host, db_name, db_user, db_password)
     
-    minx, miny, maxx, maxy = total_bounds
-    divisor = 1000
-    minx = int(np.floor(minx / divisor) * divisor)
-    miny = int(np.floor(miny / divisor) * divisor)
-    maxx = int(np.ceil(maxx / divisor) * divisor)
-    maxy = int(np.ceil(maxy / divisor) * divisor)
+    # minx, miny, maxx, maxy = total_bounds
+    # divisor = 1000
+    # minx = int(np.floor(minx / divisor) * divisor)
+    # miny = int(np.floor(miny / divisor) * divisor)
+    # maxx = int(np.ceil(maxx / divisor) * divisor)
+    # maxy = int(np.ceil(maxy / divisor) * divisor)
 
     # completed = ['08A', 'HGW', 'VCI', '08C', '08D', 
     # '08F', 'FRA', 'WWA', 'HAY', '08G', '10E',
     #  'CLR', 'PCR','YKR', 'ERK', '08B', '08E', 'LRD]
     
     region_codes = sorted(os.listdir(parquet_dir))
-    region_codes = ['HGW', 'VCI']
-    
-    for rc in region_codes:
-        
+    # region_codes = ['HGW', 'VCI', '08A', 'WWA', 'HAY', 'PCR', 'FRA', 'ERK', 'LRD', ]
+    # region_codes = ['LRD']
+    for rc in region_codes:        
         print(f'Processing {rc} region -----------------------')
-
         n_basins_in_db = count_basins_in_db(rc)
         n_ppt = get_ppt_count(rc)
+
+        print(f'    {rc} has {n_ppt} pour points and {n_basins_in_db} basins in the database.')
         
         if n_basins_in_db > n_ppt:
             raise Exception(f'    {rc} there should not be more db rows than pour points...')
@@ -248,8 +269,8 @@ def convert_parquet_to_postgis_db(parquet_dir, db_host, db_name, db_user, db_pas
             print(f'    {rc} region already processed ({n_basins_in_db} basins/ppts), skipping...')
             continue
             
-        fpath = os.path.join(parquet_dir, rc)
-        nparts = len(os.listdir(fpath))
+        fpath = os.path.join(parquet_dir, rc, f'{rc}_basins_R0.parquet')
+        # nparts = len(os.listdir(os.path.join(parquet_dir, rc)))
         print(f'    Loading file {fpath.split("/")[-1]}...')
         
         df = load_file_dgp(fpath, parquet_schema)
@@ -257,12 +278,22 @@ def convert_parquet_to_postgis_db(parquet_dir, db_host, db_name, db_user, db_pas
         if ('centroid_x' not in df.columns) or ('centroid_y' not in df.columns):
             # create two new columns for the centroid coordinates
             df['centroid_x'] = df['centroid_geometry'].x
+            
             df['centroid_y'] = df['centroid_geometry'].y
+
+            # add the centroid columns to the database table
+            conn = psycopg2.connect(host=db_host, dbname=db_name, user=db_user, password=db_password)
+            cur = conn.cursor()
+            # add the centroid_x and centroid_y columns to the table
+            cur.execute(f'ALTER TABLE {schema_name}.basin_attributes ADD COLUMN IF NOT EXISTS centroid_x FLOAT;')
+            cur.execute(f'ALTER TABLE {schema_name}.basin_attributes ADD COLUMN IF NOT EXISTS centroid_y FLOAT;')
+            conn.commit()
+
                 
         geometry_cols = [c for c in df.columns if 'geometry' in c]
         non_geo_cols = [c for c in df.columns if 'geometry' not in c]
                 
-        df = check_polygon_flags(df)
+        df = check_polygon_flags(rc, df)
           
         if len(non_geo_cols) > len(set(non_geo_cols)):
             raise Exception('Duplicated column names in non-geometry columns.')
@@ -272,7 +303,7 @@ def convert_parquet_to_postgis_db(parquet_dir, db_host, db_name, db_user, db_pas
             populate_table_columns(df, schema_name, geometry_cols, non_geo_cols, db_host, db_name, db_user, db_password)
         
         t3 = time()
-        df = reformat_geom_cols(df, geometry_cols, nparts)
+        df = reformat_geom_cols(df, geometry_cols)
         t4 = time()
                 
         print(f'   Dask geopandas converted columns to wkb in {t4-t3:.2f} seconds.')
@@ -323,15 +354,15 @@ if __name__ == '__main__':
     data_dir = os.path.join(base_dir, 'processed_data')
     parquet_dir = os.path.join(data_dir, 'derived_basins/')
     
-    bc_bounds_file = os.path.join(input_data_dir, 'region_bounds/BC_study_region_polygon_4326.geojson')
     t0 = time()
-    bc_bounds = gpd.read_file(bc_bounds_file)
+    # bc_bounds_file = os.path.join(input_data_dir, 'region_bounds/BC_study_region_polygon_4326.geojson')
+    # bc_bounds = gpd.read_file(bc_bounds_file)
     t1 = time()
-    print(f'Loaded BC bounds in {t1 - t0:.2f} seconds.  crs={bc_bounds.crs}')
+    # print(f'Loaded BC bounds in {t1 - t0:.2f} seconds.  crs={bc_bounds.crs}')
 
     # get the total bounds of the study area
     #  minx, miny, maxx, maxy
-    total_bounds = bc_bounds.total_bounds
+    # total_bounds = bc_bounds.total_bounds
     t2 = time()
     print(f'Retrieved total bounds in {t2 - t1:.2f} seconds.')
     schema_name = 'basins_schema'
@@ -340,7 +371,7 @@ if __name__ == '__main__':
     convert_parquet_to_postgis_db(
         parquet_dir,
         db_host, db_name, db_user, db_password, 
-        schema_name, total_bounds)
+        schema_name)
     
     tbb = time()
     print(f'Finished populating postgis database in {tbb - taa:.2f} seconds.')

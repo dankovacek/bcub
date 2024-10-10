@@ -11,20 +11,9 @@ import numpy as np
 import pandas as pd
 import geopandas as gpd
 import rioxarray as rxr
+import rasterio
 
 from shapely.geometry import Point
-
-from numba import jit
-
-# from multiprocessing import Pool
-
-# ADD
-# ADD  Import lake polygons:
-# ADD       -filter out confluences in lakes
-# ADD       -find all stream network intersections with lake polygons
-# ADD       -set all as confluences except max value (outlet)
-# ADD       - or rather any whose connecting cells are increasing in acc
-#               -this will get messy, guaranteed
 
 DEM_source = 'USGS_3DEP'
 
@@ -37,54 +26,40 @@ if not os.path.exists(output_dir):
     os.mkdir(output_dir)
 
 # this should correspond with the threshold accumulation
-# set in "derive_flow_accumulation.py"
-min_basin_area = 2 # km^2
+# set in "process_flow_accumulation.py"
+# from process_flow_accumulation import minimum_basin_area
+
 # min number of cells comprising a basin
 # basin_threshold = int(min_basin_area * 1E6 / (90 * 90)) 
 
 region_files = os.listdir(DEM_DIR)
 
 region_codes = sorted(list(set([e.split('_')[0] for e in region_files])))
-# region_codes = ['08P']
 
-
-def retrieve_raster(region, raster_type, crs=3005):
+def retrieve_raster(region, raster_type, region_polygon, crs=3005):
     filename = f'{region}_{DEM_source}_{crs}_{raster_type}.tif'
     raster_path = os.path.join(DEM_DIR, f'{filename}')
+
     raster = rxr.open_rasterio(raster_path, mask_and_scale=True)
     crs = raster.rio.crs
     affine = raster.rio.transform(recalc=False)
-    clipped = clip_raster_with_polygon(region, raster, crs, raster.rio.resolution())
-    return clipped, crs, affine
+    masked = mask_raster_with_polygon(region_polygon, raster, crs)
+    return masked, crs, affine
 
 
-def clip_raster_with_polygon(region, raster, crs, resolution):
-    region_polygon = get_region_polygon(region)
+def mask_raster_with_polygon(region_polygon, raster, crs):
     region_polygon = region_polygon.to_crs(crs)
     assert region_polygon.crs == crs
     # add a buffer to the region mask to simplify windowing
     # operations for raster processing (avoid cutting edges)
+    resolution = raster.rio.resolution()
     buffer_len = round(abs(resolution[0]), 0)
-    clipped = raster.rio.clip(region_polygon.buffer(buffer_len).geometry)
+    clipped = raster.rio.clip(region_polygon.buffer(buffer_len), drop=False)
+    # Mask the raster with the region polygon
+    # masked = rasterio.mask.mask(raster, region_polygon.geometry, invert=True, nodata=raster.rio.nodata, crop=False)
+    
     return clipped
-
-
-def get_region_polygon(region):
-    polygon_path = os.path.join(BASE_DIR, 'input_data/region_polygons/')
-    poly_files = os.listdir(polygon_path)
-    file = [e for e in poly_files if e.startswith(region)]
-    if len(file) == 0:
-        raise Exception; 'Region shape file not found.'
-    fpath = os.path.join(polygon_path, file[0])
-    gdf = gpd.read_file(fpath)
-    return gdf
-  
-
-def get_region_area(region):
-    gdf = get_region_polygon(region)
-    gdf = gdf.to_crs(3005)
-    return gdf['geometry'].area.values[0] / 1E6
-
+ 
 
 def mask_flow_direction(S_w, F_w):  
 
@@ -122,10 +97,7 @@ def check_CONF(i, j, ppts, S_w, F_m):
         ppts[fp_idx]['CONF'] = True        
 
         for (ci, cj) in inflow_cells:
-            ix = ci + i - 1
-            jx = cj + j - 1
-
-            pt_idx = f'{ix},{jx}'
+            pt_idx = f'{ci + i - 1},{cj + j - 1}'
 
             # cells flowing into the focus 
             # cell are confluence cells
@@ -158,7 +130,7 @@ def create_pour_point_gdf(stream, ppt_df, crs):
     conf_chunks = np.array_split(ppt_df, n_chunks)
     processed_chunks = []
     for chunk in conf_chunks:
-        ppts = stream[0, chunk['ix'].values, chunk['jx'].values]
+        ppts = stream[0, chunk['i_row'].values, chunk['j_col'].values]
         coords = tuple(map(tuple, zip(ppts.coords['x'].values, ppts.coords['y'].values)))
         chunk['geometry'] = [Point(p) for p in coords]
         processed_chunks.append(chunk)
@@ -214,8 +186,8 @@ def process_ppts(S, F, A):
     ppt_df.reset_index(inplace=True) 
     
     # split the cell indices into columns and convert str-->int
-    ppt_df['ix'] = [int(e.split(',')[0]) for e in ppt_df['cell_idx']]
-    ppt_df['jx'] = [int(e.split(',')[1]) for e in ppt_df['cell_idx']]
+    ppt_df['i_row'] = [int(e.split(',')[0]) for e in ppt_df['cell_idx']]
+    ppt_df['j_col'] = [int(e.split(',')[1]) for e in ppt_df['cell_idx']]
     
     # filter for stream points that are an outlet or a confluence
     ppt_df = ppt_df[(ppt_df['OUTLET'] == True) | (ppt_df['CONF'] == True)]
@@ -224,23 +196,27 @@ def process_ppts(S, F, A):
 
 cell_tracking_info = {}
 
-regions_to_process = sorted(list(set(region_codes)))
-# regions_to_process = ['HGW']
+region_polygon_df = gpd.read_file(os.path.join(BASE_DIR, 'input_data/BCUB_regions_merged_R0.geojson'))
+
 processed_regions = list(set([e for e in os.listdir(output_dir) if len(os.listdir(os.path.join(output_dir, e))) > 0]))
+regions_to_process = [e for e in region_codes if e not in processed_regions]
+
 n_points_total = 0
-for region in [r for r in regions_to_process if r not in processed_regions]:
+for region in regions_to_process:
     print('')
     print(f'Processing candidate pour points for {region}.')
 
-    region_area_km2 = get_region_area(region)
-
     rt0 = time.time()
+    region_polygon = region_polygon_df[region_polygon_df['region_code'] == region].copy()
+
+    region_area_km2 = (region_polygon['geometry'].area / 1E6).sum()
+    print(f'   ...region area: {region_area_km2:.1f} km^2')
     
-    stream, crs, affine = retrieve_raster(region, 'stream')
+    stream, crs, affine = retrieve_raster(region, 'stream', region_polygon)
 
-    fdir, crs, affine = retrieve_raster(region, 'fdir')
+    fdir, crs, affine = retrieve_raster(region, 'fdir', region_polygon)
 
-    acc, crs, affine = retrieve_raster(region, 'accum')
+    acc, crs, affine = retrieve_raster(region, 'accum', region_polygon)
 
     rt1 = time.time()
     print(f'   ...time to load resources: {rt1-rt0:.1f}s.')
